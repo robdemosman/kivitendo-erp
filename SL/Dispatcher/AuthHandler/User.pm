@@ -43,12 +43,27 @@ sub handle {
 }
 
 sub _error {
-  my $self = shift;
+  my ($self, %param) = @_;
 
   $::auth->punish_wrong_login;
 
   require SL::Controller::Base;
-  SL::Controller::Base->new->redirect_to('controller.pl?action=LoginScreen/user_login&error=password');
+  my $controller = SL::Controller::Base->new;
+
+  my $callback = delete $param{callback};
+  if (!$callback) {
+    delete @{ $::form }{ grep { m/^\{AUTH\}/ } keys %{ $::form } };
+    $callback = $controller->url_for(%param, %{$::form});
+  }
+
+  my %redirect_params = (
+    controller => 'LoginScreen',
+    action     => 'user_login',
+    error      => 'password',
+    callback   => $callback,
+  );
+  $controller->redirect_to(%redirect_params);
+
   return 0;
 }
 
