@@ -104,7 +104,7 @@ sub edit_account {
   $form->{feature_erfolgsrechnung} = $defaults->feature_erfolgsrechnung;
   $form->{feature_eurechnung} = $defaults->feature_eurechnung;
   $form->{feature_ustva} = $defaults->feature_ustva;
-#  $form->{feature_btw} = $defaults->feature_btw;
+#  $form->{feature_btw} = $defaults->feature_btw;   test
 
   AM->get_account(\%myconfig, \%$form);
 
