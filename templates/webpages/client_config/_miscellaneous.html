@@ -29,6 +29,15 @@
   </tr>
 
   <tr>
+     <td align="right">[% LxERP.t8("BTW nummer") %]</td>
+     [% IF SELF.defaults.feature_btw %]
+     <td>[% SELF.defaults.taxnumber %]&nbsp;&nbsp;<a href="btw.pl?action=config_step1">([% LxERP.t8("For changeing goto USTVA Config") %])</a></td>
+     [% ELSE %]
+     <td>[% L.input_tag('defaults.taxnumber', SELF.defaults.taxnumber, style=style) %]</td>
+     [% END %]
+    </tr>
+
+  <tr>
    <td align="right">[% LxERP.t8("Tax ID number") %]</td>
    <td>[% L.input_tag('defaults.co_ustid', SELF.defaults.co_ustid, style=style) %]</td>
   </tr>

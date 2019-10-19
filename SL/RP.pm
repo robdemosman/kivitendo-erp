@@ -1898,7 +1898,7 @@ sub erfolgsrechnung {
   $form->{fromdate} = DateTime->new(year => 2000, month => 1, day => 1)->to_kivitendo unless $form->{fromdate};
   $form->{todate} = $form->current_date(%{$myconfig}) unless $form->{todate};
 
-  my %categories = (I => "ERTRAG", E => "AUFWAND");
+  my %categories = (I => "OPBRENGSTEN", E => "UITGAVEN");
   my $fromdate = conv_dateq($form->{fromdate});
   my $todate = conv_dateq($form->{todate});
   my $department_id = conv_i((split /--/, $form->{department})[1], 'NULL');

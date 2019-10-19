@@ -1,4 +1,6 @@
 QUnit.test("kivi.setup_formats date format initialization", function( assert ) {
+
+
   kivi.setup_formats({ dates: "dd.mm.yy" });
   assert.deepEqual(kivi._date_format, { sep: '.', d: 0, m: 1, y: 2 } , "German date style with dots");
 

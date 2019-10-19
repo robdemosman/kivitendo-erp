@@ -220,6 +220,9 @@ $(function() {
                 [% IF feature_ustva %]
                   <th align="left">[% 'pos_ustva' | $T8 %]</th>
                 [% END %]
+                [% IF feature_btw %]
+                  <th align="left">[% 'pos_ustva' | $T8 %]</th>
+                [% END %]
                 <th align="left">[% 'delete' | $T8 %] ? </th>
               </tr>
 [% FOREACH tk = ACCOUNT_TAXKEYS %]
@@ -232,6 +235,9 @@ $(function() {
                 [% IF feature_ustva %]
                   <td><select name="taxkey_pos_ustva_[% tk.runningnumber %]">[% tk.select_tax %]</select></td>
                 [% END %]
+                [% IF feature_btw %]
+                  <td><select name="taxkey_pos_btw_[% tk.runningnumber %]">[% tk.select_tax %]</select></td>
+                [% END %]
                 <td><input name="taxkey_del_[% tk.runningnumber %]" type="checkbox"
                 class="checkbox" value="delete"></td>
     [% ELSE %]
@@ -240,6 +246,9 @@ $(function() {
                 <td><input name="taxkey_startdate_[% tk.runningnumber %]" value="[% HTML.escape(tk.startdate) %]"></td>
                 [% IF feature_ustva %]
                   <td><select name="taxkey_pos_ustva_[% tk.runningnumber %]">[% tk.select_tax %]</select></td>
+                [% END %]
+                [% IF feature_btw %]
+                  <td><select name="taxkey_pos_btw_[% tk.runningnumber %]">[% tk.select_tax %]</select></td>
                 [% END %]
                 <td>&nbsp;</td>
     [% END %]

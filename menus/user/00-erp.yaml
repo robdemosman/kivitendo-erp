@@ -881,6 +881,15 @@
   params:
     action: report
 - parent: reports
+  id: reports_btw
+  name: BTW
+  icon: belastingdienst
+  order: 650
+  access: advance_turnover_tax_return & client/feature_btw
+  module: btw.pl
+  params:
+    action: report
+- parent: reports
   id: reports_projecttransactions
   name: Projecttransactions
   order: 700
@@ -1058,6 +1067,14 @@
   order: 200
   access: client/feature_ustva
   module: ustva.pl
+  params:
+    action: config_step1
+- parent: system
+  id: system_btw_einstellungen
+  name: BTW Instellingen
+  order: 200
+  access: client/feature_btw
+  module: btw.pl
   params:
     action: config_step1
 - parent: system

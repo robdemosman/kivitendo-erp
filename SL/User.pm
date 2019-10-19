@@ -374,7 +374,8 @@ sub dbcreate {
     feature_datev = ?,
     feature_erfolgsrechnung = ?,
     feature_eurechnung = ?,
-    feature_ustva = ?
+    feature_ustva = ?,
+    feature_btw = ?
   |;
   do_query($form, $dbh, $query,
     $form->{accounting_method},
@@ -386,7 +387,8 @@ sub dbcreate {
     $form->{feature_datev},
     $form->{feature_erfolgsrechnung},
     $form->{feature_eurechnung},
-    $form->{feature_ustva}
+    $form->{feature_ustva},
+    $form->{feature_btw}
   );
 
   $dbh->disconnect;

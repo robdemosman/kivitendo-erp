@@ -532,7 +532,7 @@ sub set_standard_title {
   $::lxdebug->enter_sub;
   my $self = shift;
 
-  $self->{titlebar}  = "kivitendo " . $::locale->text('Version') . " " . $self->read_version;
+  $self->{titlebar}  = "Master Print " . $::locale->text('Version') . " " . $self->read_version;
   $self->{titlebar} .= "- $::myconfig{name}"   if $::myconfig{name};
   $self->{titlebar} .= "- $::myconfig{dbname}" if $::myconfig{name};
 

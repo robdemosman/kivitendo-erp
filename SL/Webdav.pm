@@ -17,21 +17,21 @@ use Rose::Object::MakeMethods::Generic (
 );
 
 my %type_to_path = (
-  sales_quotation         => 'angebote',
-  sales_order             => 'bestellungen',
-  request_quotation       => 'anfragen',
-  purchase_order          => 'lieferantenbestellungen',
-  sales_delivery_order    => 'verkaufslieferscheine',
-  purchase_delivery_order => 'einkaufslieferscheine',
-  credit_note             => 'gutschriften',
-  invoice                 => 'rechnungen',
-  purchase_invoice        => 'einkaufsrechnungen',
-  part                    => 'waren',
-  service                 => 'dienstleistungen',
-  assembly                => 'erzeugnisse',
-  letter                  => 'briefe',
-  general_ledger          => 'dialogbuchungen',
-  accounts_payable        => 'kreditorenbuchungen',
+  sales_quotation         => 'offerte',
+  sales_order             => 'opdracht',
+  request_quotation       => 'prijsaanvraag',
+  purchase_order          => 'aankooporder',
+  sales_delivery_order    => 'verkooppakbon',
+  purchase_delivery_order => 'inkooppakbon',
+  credit_note             => 'creditfactuur',
+  invoice                 => 'factuur',
+  purchase_invoice        => 'inkoopfactuur',
+  part                    => 'artikel',
+  service                 => 'dienst',
+  assembly                => 'assemblage',
+  letter                  => 'brief',
+  general_ledger          => 'grootboek',
+  accounts_payable        => 'crediteuren',
 );
 
 sub get_all_files {

@@ -15,6 +15,7 @@ sub feature_datev           { 1 }
 sub feature_erfolgsrechnung { 0 }
 sub feature_eurechnung      { 1 }
 sub feature_ustva           { 1 }
+sub feature_btw             { 0 }
 
 # user defaults
 sub numberformat            { '1.000,00' }
