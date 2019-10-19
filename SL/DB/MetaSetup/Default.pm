@@ -82,6 +82,7 @@ __PACKAGE__->meta->columns(
   feature_experimental_assortment           => { type => 'boolean', default => 'true', not_null => 1 },
   feature_experimental_order                => { type => 'boolean', default => 'true', not_null => 1 },
   feature_ustva                             => { type => 'boolean', default => 'true', not_null => 1 },
+  feature_btw                               => { type => 'boolean', default => 'true', not_null => 1 },
   fxgain_accno_id                           => { type => 'integer' },
   fxloss_accno_id                           => { type => 'integer' },
   gl_changeable                             => { type => 'integer', default => 2, not_null => 1 },

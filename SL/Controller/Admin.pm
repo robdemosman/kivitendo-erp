@@ -650,7 +650,7 @@ sub create_dataset_form {
   $::form->{feature_erfolgsrechnung} = $defaults->feature_erfolgsrechnung(0);
   $::form->{feature_eurechnung}      = $defaults->feature_eurechnung(1);
   $::form->{feature_ustva}           = $defaults->feature_ustva(1);
-  $::form->{feature_btw}           = $defaults->feature_btw(1);
+  $::form->{feature_btw}             = $defaults->feature_btw(1);
 
   $self->render('admin/create_dataset', title => (t8('Database Administration') . " / " . t8('Create Dataset')), superuser => $params{superuser});
 }
