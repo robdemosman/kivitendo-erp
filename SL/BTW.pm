@@ -597,7 +597,7 @@ sub process_query {
   $main::lxdebug->leave_sub();
 }
 
-sub ustva {
+sub btw {
   $main::lxdebug->enter_sub();
 
   my ($self, $myconfig, $form) = @_;
