@@ -96,13 +96,13 @@ sub report {
   my $department = '';
   my $hide = '';
 
-  setup_ustva_report_action_bar();
+  setup_btw_report_action_bar();
   $form->header;
 
   # Einlesen der Finanzamtdaten
-  my $ustva = USTVA->new();
-  $ustva->get_config();
-  $ustva->get_finanzamt();
+  my $btw = BTW->new();
+  $btw->get_config();
+  $btw->get_finanzamt();
 
   # Hier Einlesen der user-config
   # steuernummer entfernt für prerelease
@@ -154,9 +154,9 @@ sub report {
   $form->{co_fax}   = $form->{fax}   unless $form->{co_fax};
   $form->{co_url}   = $form->{urlx}  unless $form->{co_url};
 
-  my $taxnumber_given = ($form->{taxnumber} ne '') ? $form->{taxnumber} : qq|<a href="ustva.pl?action=config_step1">Keine Steuernummer hinterlegt!</a><br>|;
-  my $fa_name_given = ($form->{fa_name} ne '') ? $form->{fa_name} : qq|<a href="ustva.pl?action=config_step1">Kein Finanzamt hinterlegt!</a><br>|;
-  my $ustva_vorauswahl = &ustva_vorauswahl();
+  my $taxnumber_given = ($form->{taxnumber} ne '') ? $form->{taxnumber} : qq|<a href="btw.pl?action=config_step1">Keine Steuernummer hinterlegt!</a><br>|;
+  my $fa_name_given = ($form->{fa_name} ne '') ? $form->{fa_name} : qq|<a href="btw.pl?action=config_step1">Kein Finanzamt hinterlegt!</a><br>|;
+  my $btw_vorauswahl = &btw_vorauswahl();
 
   my @all_years = $form->all_years(\%myconfig);
 
@@ -217,7 +217,7 @@ sub report {
     }
   );
 
-  $ustva->get_coa($form); # fetches coa and modifies some form variables
+  $btw->get_coa($form); # fetches coa and modifies some form variables
 
   my $template_ref = {
     openings         => $openings,
@@ -229,7 +229,7 @@ sub report {
     select_year      => $select_year,
     period_local     => $period_local,
     method_local     => $method_local,
-    ustva_vorauswahl => $ustva_vorauswahl,
+    btw_vorauswahl => $btw_vorauswahl,
     checkbox_kz_10   => $checkbox_kz_10,
     checkbox_kz_22   => $checkbox_kz_22,
     checkbox_kz_29   => $checkbox_kz_29,
@@ -256,7 +256,7 @@ sub help {
   $::form->{help}      = 'btw';
   $::form->{type}      = 'help';
   $::form->{format}    = 'html';
-  generate_ustva();
+  generate_btw();
 
   $::lxdebug->leave_sub();
 }
@@ -266,12 +266,12 @@ sub show {
 
   $::auth->assert('advance_turnover_tax_return');
 
-  #generate_ustva();
+  #generate_btw();
   $::lxdebug->leave_sub();
   call_sub($::form->{"nextsub"});
 }
 
-sub ustva_vorauswahl {
+sub btw_vorauswahl {
   $::lxdebug->enter_sub();
 
   my $form     = $::form;
@@ -516,7 +516,7 @@ sub show_options {
   #  $form->{DF}{$form->{format}} = "selected";
   #  $form->{OP}{$form->{media}} = "selected";
   #  $form->{SM}{$form->{sendmode}} = "selected";
-  my $type   = qq|      <input type=hidden name="type" value="ustva">|;
+  my $type   = qq|      <input type=hidden name="type" value="btw">|;
   my $media  = qq|      <input type=hidden name="media" value="screen">|;
   my $format =
       qq|       <option value=html selected>|
@@ -544,7 +544,7 @@ sub show_options {
   return $show_options;
 }
 
-sub generate_ustva {
+sub generate_btw {
   $::lxdebug->enter_sub();
 
   my $form     = $::form;
@@ -558,16 +558,16 @@ sub generate_ustva {
   $form->{templates} = $defaults->templates;
 
 
-  my $ustva = USTVA->new();
-  $ustva->get_config();
-  $ustva->get_finanzamt();
+  my $btw = BTW->new();
+  $btw->get_config();
+  $btw->get_finanzamt();
 
   # Setze Anmeldungszeitraum
 
-  $ustva->set_FromTo(\%$form);
+  $btw->set_FromTo(\%$form);
 
-  # Get the USTVA
-  $ustva->ustva(\%myconfig, \%$form);
+  # Get the BTW
+  $btw->btw(\%myconfig, \%$form);
 
   # reformat Dates to dateformat
   $form->{fromdate} = $locale->date(\%myconfig, $form->{fromdate}, 0, 0, 0);
@@ -657,7 +657,7 @@ sub generate_ustva {
       $form->{endbold} = "}";
       $form->{br}      = '\\\\';
 
-      # Zahlenformatierung für Latex USTVA Formulare
+      # Zahlenformatierung für Latex BTW Formulare
 
       foreach my $number (@{$::form->{category_euro}}) {
         $form->{$number} = $form->format_amount(\%myconfig, $form->{$number}, '0', '');
@@ -690,12 +690,12 @@ sub generate_ustva {
     } elsif ( $form->{format} eq '' ){ # No format error.
 
       $form->header;
-      USTVA::error( $locale->text('Application Error. No Format given' ) . "!");
+      BTW::error( $locale->text('Application Error. No Format given' ) . "!");
       $::dispatcher->end_request;
 
     } else { # All other Formats are wrong
       $form->header;
-      USTVA::error( $locale->text('Application Error. Wrong Format') . ": " . $form->{format} );
+      BTW::error( $locale->text('Application Error. Wrong Format') . ": " . $form->{format} );
       $::dispatcher->end_request;
     }
 
@@ -703,7 +703,7 @@ sub generate_ustva {
   } else  # Outputformat for generic output
   {
 
-    $form->{USTVA} = [];
+    $form->{BTW} = [];
 
     if ( $form->{format} eq 'generic') { # Formatierungen für HTML Ausgabe
 
@@ -715,7 +715,7 @@ sub generate_ustva {
 
         $::lxdebug->message($LXDebug::DEBUG, "Kennziffer $kennziffer: '$form->{$kennziffer}'" );
         $::lxdebug->dump($LXDebug::DEBUG, $rec_ref );
-        push @ { $form->{USTVA} }, $rec_ref;
+        push @ { $form->{BTW} }, $rec_ref;
       }
 
     }
@@ -724,7 +724,7 @@ sub generate_ustva {
 
   if ( $form->{period} eq '13' and $form->{format} ne 'html') {
     $form->header;
-    USTVA::info(
+    BTW::info(
       $locale->text(
       'Yearly taxreport not yet implemented')
       . '!');
@@ -746,8 +746,8 @@ sub generate_ustva {
    $form->parse_template(\%myconfig);
   } else
   {
-   # add a prefix for ustva pos numbers, i.e.: 81 ->  post_ustva_81
-   $form->{"pos_ustva_$_"} = $form->{$_} for grep { m{^\d+} } keys %{ $form };
+   # add a prefix for btw pos numbers, i.e.: 81 ->  post_btw_81
+   $form->{"pos_btw_$_"} = $form->{$_} for grep { m{^\d+} } keys %{ $form };
    $form->{title} = $locale->text('Advance turnover tax return');
 
    $form->header;
@@ -768,13 +768,13 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
 
   # edit all taxauthority prefs
 
-  setup_ustva_config_step1_action_bar();
+  setup_btw_config_step1_action_bar();
 
   $::form->header;
 
-  my $ustva = USTVA->new();
-  $ustva->get_config();
-  $ustva->get_finanzamt();
+  my $btw = BTW->new();
+  $btw->get_config();
+  $btw->get_finanzamt();
 
   my $land = $::form->{fa_land_nr};
   my $amt  = $::form->{fa_bufa_nr};
@@ -783,7 +783,7 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
   $::form->{title} = $::locale->text('Tax Office Preferences');
 
 
-  my $select_tax_office               = $ustva->fa_auswahl($land, $amt, $ustva->query_finanzamt(\%::myconfig, $::form));
+  my $select_tax_office               = $btw->fa_auswahl($land, $amt, $btw->query_finanzamt(\%::myconfig, $::form));
   my $method_local = ($::form->{accounting_method} eq 'accrual') ? $::locale->text('accrual')
                    : ($::form->{accounting_method} eq 'cash')    ? $::locale->text('cash')
                    : '';
@@ -803,7 +803,7 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
         { 'variable' => $variable, 'value' => $_hidden_local_variables{$variable} };
   }
 
-  my @_hidden_form_variables = $ustva->get_fiamt_vars();
+  my @_hidden_form_variables = $btw->get_fiamt_vars();
   push @_hidden_form_variables ,qw(fa_bufa_nr taxnumber accounting_method coa);
 
   foreach my $variable (@_hidden_form_variables) {
@@ -811,7 +811,7 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
         { 'variable' => $variable, 'value' => $::form->{$variable} };
   }
 
-  $ustva->get_coa($::form); # fetches coa and modifies some form variables
+  $btw->get_coa($::form); # fetches coa and modifies some form variables
 
   # Variablen für das Template zur Verfügung stellen
   my $template_ref = {
@@ -825,7 +825,7 @@ $::form->{title} = $::locale->text('Tax Office Preferences');
   };
 
   # Ausgabe des Templates
-  print($::form->parse_html_template('ustva/config_step1', $template_ref));
+  print($::form->parse_html_template('btw/config_step1', $template_ref));
 
   $::lxdebug->leave_sub();
 }
@@ -839,28 +839,28 @@ sub config_step2 {
 
   $::auth->assert('advance_turnover_tax_return');
 
-  setup_ustva_config_step2_action_bar();
+  setup_btw_config_step2_action_bar();
 
   $form->header();
 
   my $fa_land_nr         = '';
   my $fa_bufa_nr         = '';
 
-  my $ustva = USTVA->new();
-  $ustva->get_config() if ($form->{saved} eq $locale->text('saved'));
+  my $btw = BTW->new();
+  $btw->get_config() if ($form->{saved} eq $locale->text('saved'));
   my $coa = $::form->{coa};
   $form->{"COA_$coa"}  = '1';
   $form->{COA_Germany} = '1' if ($coa =~ m/^germany/i);
-  $ustva->get_finanzamt();
+  $btw->get_finanzamt();
 
 
   # Auf Übergabefehler checken
-  USTVA::info(  $locale->text('Missing Tax Authoritys Preferences') . "\n"
-              . $locale->text('USTVA-Hint: Tax Authoritys'))
+  BTW::info(  $locale->text('Missing Tax Authoritys Preferences') . "\n"
+              . $locale->text('BTW-Hint: Tax Authoritys'))
     if (   $form->{fa_bufa_nr_new} eq 'Auswahl'
         || $form->{fa_land_nr_new} eq 'Auswahl');
-  USTVA::info(  $locale->text('Missing Method!') . "\n"
-              . $locale->text('USTVA-Hint: Method'))
+  BTW::info(  $locale->text('Missing Method!') . "\n"
+              . $locale->text('BTW-Hint: Method'))
     if ($form->{accounting_method} eq '');
 
   # Klären, ob Variablen bereits befüllt sind UND ob veränderungen auf
@@ -886,7 +886,7 @@ sub config_step2 {
     create_steuernummer();
 
     # rebuild elster_amt
-    $ustva->get_finanzamt();
+    $btw->get_finanzamt();
 
   } else {
 
@@ -903,9 +903,9 @@ sub config_step2 {
   $form->{fa_oeffnungszeiten} =~ s/\\\\n/\n/g;
 
 
-  $ustva->get_coa($form); # fetches coa and modifies some form variables
+  $btw->get_coa($form); # fetches coa and modifies some form variables
 
-  my $input_steuernummer = $ustva->steuernummer_input(
+  my $input_steuernummer = $btw->steuernummer_input(
                              $fa_land_nr,
                              $fa_bufa_nr,
                              $form->{taxnumber}
@@ -952,7 +952,7 @@ sub config_step2 {
   };
 
   # Ausgabe des Templates
-  print($form->parse_html_template('ustva/config_step2', $template_ref));
+  print($form->parse_html_template('btw/config_step2', $template_ref));
 
 
   $::lxdebug->leave_sub();
@@ -1012,8 +1012,8 @@ sub save {
 
   # Hier kommt dann die Plausibilitätsprüfung der ELSTERSteuernummer TODO ??
   if (1) {
-    my $ustva = USTVA->new();
-    $ustva->save_config();
+    my $btw = BTW->new();
+    $btw->save_config();
 
     #$::form->{elster} = '1';
     $::form->{saved} = $::locale->text('saved');
@@ -1042,12 +1042,12 @@ sub back {
   $::lxdebug->leave_sub();
 }
 
-sub setup_ustva_report_action_bar {
+sub setup_btw_report_action_bar {
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
         t8('Show'),
-        submit    => [ '#form_do', { action => 'generate_ustva' } ],
+        submit    => [ '#form_do', { action => 'generate_btw' } ],
         accesskey => 'enter',
       ],
       action => [
@@ -1060,7 +1060,7 @@ sub setup_ustva_report_action_bar {
   }
 }
 
-sub setup_ustva_config_step1_action_bar {
+sub setup_btw_config_step1_action_bar {
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
@@ -1072,7 +1072,7 @@ sub setup_ustva_config_step1_action_bar {
   }
 }
 
-sub setup_ustva_config_step2_action_bar {
+sub setup_btw_config_step2_action_bar {
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
