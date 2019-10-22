@@ -116,6 +116,7 @@ sub transactions {
     qq|  o.transaction_description, | .
     qq|  o.marge_total, o.marge_percent, | .
     qq|  o.itime::DATE AS insertdate, | .
+    qq|  department.description as department, | .
     qq|  ex.$rate AS exchangerate, | .
     qq|  pt.description AS payment_terms, | .
     qq|  pr.projectnumber AS globalprojectnumber, | .
@@ -134,6 +135,7 @@ sub transactions {
     qq|LEFT JOIN project pr ON (o.globalproject_id = pr.id) | .
     qq|LEFT JOIN payment_terms pt ON (pt.id = o.payment_id)| .
     qq|LEFT JOIN tax_zones tz ON (o.taxzone_id = tz.id) | .
+    qq|LEFT JOIN department   ON (o.department_id = department.id) | .
     qq|$periodic_invoices_joins | .
     qq|WHERE (o.quotation = ?) |;
   push(@values, $quotation);
@@ -181,7 +183,7 @@ SQL
     push(@values, (like($form->{"cp_name"}))x2);
   }
 
-  if (!$main::auth->assert('sales_all_edit', 1)) {
+  if ( !(($vc eq 'customer' && $main::auth->assert('sales_all_edit', 1)) || ($vc eq 'vendor' && $main::auth->assert('purchase_all_edit', 1))) ) {
     $query .= " AND o.employee_id = (select id from employee where login= ?)";
     push @values, $::myconfig{login};
   }
@@ -353,6 +355,7 @@ SQL
     "insertdate"              => "o.itime",
     "taxzone"                 => "tz.description",
     "payment_terms"           => "pt.description",
+    "department"              => "department.description",
   );
   if ($form->{sort} && grep($form->{sort}, keys(%allowed_sort_columns))) {
     $sortorder = $allowed_sort_columns{$form->{sort}} . " ${sortdir}"  . ", o.itime ${sortdir}";
@@ -1177,8 +1180,9 @@ sub _retrieve {
       # get tax rates and description
       my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
       $query =
-        qq|SELECT c.accno, t.taxdescription, t.rate, t.taxnumber | .
-        qq|FROM tax t LEFT JOIN chart c on (c.id = t.chart_id) | .
+        qq|SELECT c.accno, t.taxdescription, t.rate, c.accno as taxnumber | .
+        qq|FROM tax t | .
+        qq|LEFT JOIN chart c on (c.id = t.chart_id) | .
         qq|WHERE t.id IN (SELECT tk.tax_id FROM taxkeys tk | .
         qq|               WHERE tk.chart_id = (SELECT id FROM chart WHERE accno = ?) | .
         qq|                 AND startdate <= $transdate ORDER BY startdate DESC LIMIT 1) | .
@@ -1574,7 +1578,14 @@ sub order_details {
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate_nofmt} },  $form->{"${item}_rate"} * 100);
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxnumber} },      $form->{"${item}_taxnumber"});
 
-    my $tax_obj     = SL::DB::Manager::Tax->find_by(taxnumber => $form->{"${item}_taxnumber"});
+    my $tax_objs     = SL::DB::Manager::Tax->get_objects_from_sql(
+      sql  => 'SELECT * from tax where chart_id = (SELECT id FROM chart WHERE accno = ?)',
+      args => [ $form->{"${item}_taxnumber"} ]
+    );
+    my $tax_obj;
+    if ( $tax_objs ) {
+      $tax_obj     = $tax_objs->[0];
+    }
     my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
   }

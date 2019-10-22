@@ -33,7 +33,7 @@ use Rose::Object::MakeMethods::Generic (
                                   all_buchungsgruppen all_payment_terms all_warehouses
                                   parts_classification_filter
                                   all_languages all_units all_price_factors) ],
-  'scalar'                => [ qw(warehouse bin) ],
+  'scalar'                => [ qw(warehouse bin stock_amounts journal) ],
 );
 
 # safety
@@ -263,6 +263,17 @@ sub action_history {
                                   history_entries => $history_entries);
 }
 
+sub action_inventory {
+  my ($self) = @_;
+
+  $::auth->assert('warehouse_contents');
+
+  $self->stock_amounts($self->part->get_simple_stock_sql);
+  $self->journal($self->part->get_mini_journal);
+
+  $_[0]->render('part/_inventory_data', { layout => 0 });
+};
+
 sub action_update_item_totals {
   my ($self) = @_;
 
@@ -399,15 +410,20 @@ sub action_add_assembly_item {
 }
 
 sub action_show_multi_items_dialog {
+  my ($self) = @_;
+
+  my $search_term = $self->models->filtered->laundered->{all_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_makemodel_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_customer_partnumber_substr_multi__ilike};
+
   $_[0]->render('part/_multi_items_dialog', { layout => 0 },
-    all_partsgroups => SL::DB::Manager::PartsGroup->get_all
+                all_partsgroups => SL::DB::Manager::PartsGroup->get_all,
+                search_term     => $search_term
   );
 }
 
 sub action_multi_items_update_result {
   my $max_count = 100;
-
-  $::form->{multi_items}->{filter}->{obsolete} = 0;
 
   my $count = $_[0]->multi_items_models->count;
 
@@ -564,7 +580,9 @@ sub action_ajax_autocomplete {
   # since we need a second get models instance with different filters for that,
   # we only modify the original filter temporarily in place
   if ($::form->{prefer_exact}) {
-    local $::form->{filter}{'all::ilike'} = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    local $::form->{filter}{'all::ilike'}                          = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    local $::form->{filter}{'all_with_makemodel::ilike'}           = delete local $::form->{filter}{'all_with_makemodel:substr:multi::ilike'};
+    local $::form->{filter}{'all_with_customer_partnumber::ilike'} = delete local $::form->{filter}{'all_with_customer_partnumber:substr:multi::ilike'};
 
     my $exact_models = SL::Controller::Helper::GetModels->new(
       controller   => $self,
@@ -600,7 +618,13 @@ sub action_test_page {
 }
 
 sub action_part_picker_search {
-  $_[0]->render('part/part_picker_search', { layout => 0 });
+  my ($self) = @_;
+
+  my $search_term = $self->models->filtered->laundered->{all_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_makemodel_substr_multi__ilike};
+  $search_term  ||= $self->models->filtered->laundered->{all_with_customer_partnumber_substr_multi__ilike};
+
+  $_[0]->render('part/part_picker_search', { layout => 0 }, search_term => $search_term);
 }
 
 sub action_part_picker_result {
@@ -890,6 +914,8 @@ sub init_part {
 
   if ( $::form->{part}{id} ) {
     return SL::DB::Part->new(id => $::form->{part}{id})->load(with => [ qw(makemodels customerprices prices translations partsgroup shop_parts shop_parts.shop) ]);
+  } elsif ( $::form->{id} ) {
+    return SL::DB::Part->new(id => $::form->{id})->load; # used by inventory tab
   } else {
     die "part_type missing" unless $::form->{part}{part_type};
     return SL::DB::Part->new(part_type => $::form->{part}{part_type});

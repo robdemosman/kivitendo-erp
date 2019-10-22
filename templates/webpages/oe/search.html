@@ -59,14 +59,12 @@
     <tr>
      <th align="right">[% 'Transaction description' | $T8 %]</th>
      <td>[% L.input_tag("transaction_description", "", style=style) %]</td>
-
      <th align="right">[% 'Part Description' | $T8 %]</th>
      <td>[% L.input_tag("parts_description", "", style=style) %]</td>
     </tr>
     <tr>
      <th align="right">[% 'Project' | $T8 %]</th>
      <td>[% P.project.picker("project_id", '', style=style) %]</td>
-
      <th align="right">[% 'Part Number' | $T8 %]</th>
      <td>[% L.input_tag("parts_partnumber", "", style=style) %]</td>
     </tr>
@@ -259,6 +257,10 @@
          <input name="l_transaction_description" id="l_transaction_description" class="checkbox" type="checkbox" value="Y"[% IF INSTANCE_CONF.get_require_transaction_description_ps %] checked[% END %]>
          <label for="l_transaction_description">[% 'Transaction description' | $T8 %]</label>
         </td>
+        <td>
+         [%- L.checkbox_tag('l_department', label => LxERP.t8('Department')) %]</td>
+        </td>
+
        </tr>
        <tr>
         <td>

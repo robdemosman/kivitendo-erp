@@ -41,10 +41,12 @@ use SL::IO;
 use SL::MoreCommon;
 use SL::DB::Default;
 use SL::DB::Draft;
+use SL::DB::Order;
+use SL::DB::PurchaseInvoice;
 use SL::Util qw(trim);
 use SL::DB;
 use Data::Dumper;
-
+use List::Util qw(sum0);
 use strict;
 
 sub post_transaction {
@@ -154,6 +156,31 @@ sub _post_transaction {
     do_query($form, $dbh, $query, @values);
 
     $form->new_lastmtime('ap');
+
+    # Link this record to the record it was created from.
+    my $convert_from_oe_id = delete $form->{convert_from_oe_id};
+    if (!$form->{postasnew} && $convert_from_oe_id) {
+      RecordLinks->create_links('dbh'        => $dbh,
+                                'mode'       => 'ids',
+                                'from_table' => 'oe',
+                                'from_ids'   => $convert_from_oe_id,
+                                'to_table'   => 'ap',
+                                'to_id'      => $form->{id},
+      );
+
+      # Close the record it was created from if the amount of
+      # all APs create from this record equals the records amount.
+      my @links = RecordLinks->get_links('dbh'        => $dbh,
+                                         'from_table' => 'oe',
+                                         'from_id'    => $convert_from_oe_id,
+                                         'to_table'   => 'ap',
+      );
+
+      my $amount_sum = sum0 map { SL::DB::PurchaseInvoice->new(id => $_->{to_id})->load->amount } @links;
+      my $order      = SL::DB::Order->new(id => $convert_from_oe_id)->load;
+
+      $order->update_attributes(closed => 1) if ($amount_sum - $order->amount) == 0;
+    }
 
     # add individual transactions
     for my $i (1 .. $form->{rowcount}) {
@@ -427,6 +454,7 @@ sub ap_transactions {
     qq|  v.vendornumber, v.country, v.ustid, | .
     qq|  tz.description AS taxzone, | .
     qq|  pt.description AS payment_terms, | .
+    qq|  department.description AS department, | .
     qq{  ( SELECT ch.accno || ' -- ' || ch.description
            FROM acc_trans at
            LEFT JOIN chart ch ON ch.id = at.chart_id
@@ -440,7 +468,8 @@ sub ap_transactions {
     qq|LEFT JOIN employee e ON (a.employee_id = e.id) | .
     qq|LEFT JOIN project pr ON (a.globalproject_id = pr.id) | .
     qq|LEFT JOIN tax_zones tz ON (tz.id = a.taxzone_id)| .
-    qq|LEFT JOIN payment_terms pt ON (pt.id = a.payment_id)|;
+    qq|LEFT JOIN payment_terms pt ON (pt.id = a.payment_id)| .
+    qq|LEFT JOIN department ON (department.id = a.department_id)|;
 
   my $where = '';
 
@@ -449,7 +478,8 @@ sub ap_transactions {
   # Permissions:
   # - Always return invoices & AP transactions for projects the employee has "view invoices" permissions for, no matter what the other rules say.
   # - Exclude AP transactions if no permissions for them exist.
-  # - Filter by employee if requested.
+  # - Limit to own invoices unless may edit all invoices.
+  # - If may edit all, allow filtering by employee.
   my (@permission_where, @permission_values);
 
   if ($::auth->assert('vendor_invoice_edit', 1)) {
@@ -457,9 +487,16 @@ sub ap_transactions {
       push @permission_where, "NOT invoice = 'f'"; # remove ap transactions from Purchase -> Reports -> Invoices
     }
 
-    if ($form->{employee_id}) {
+    if (!$::auth->assert('purchase_all_edit', 1)) {
+      # only show own invoices
       push @permission_where,  "a.employee_id = ?";
-      push @permission_values, conv_i($form->{employee_id});
+      push @permission_values, SL::DB::Manager::Employee->current->id;
+
+    } else {
+      if ($form->{employee_id}) {
+        push @permission_where,  "a.employee_id = ?";
+        push @permission_values, conv_i($form->{employee_id});
+      }
     }
   }
 
@@ -563,7 +600,7 @@ SQL
   my $sortdir   = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
   my $sortorder = join(', ', map { "$_ $sortdir" } @a);
 
-  if (grep({ $_ eq $form->{sort} } qw(transdate id invnumber ordnumber name netamount tax amount paid datepaid due duedate notes employee transaction_description direct_debit))) {
+  if (grep({ $_ eq $form->{sort} } qw(transdate id invnumber ordnumber name netamount tax amount paid datepaid due duedate notes employee transaction_description direct_debit department))) {
     $sortorder = $form->{sort} . " $sortdir";
   }
 

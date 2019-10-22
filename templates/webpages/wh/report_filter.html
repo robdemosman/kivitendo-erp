@@ -1,6 +1,7 @@
 [%- USE T8 %]
 [%- USE L %]
 [%- USE P %]
+[%- USE LxERP %]
 [%- USE HTML %][%- USE JavaScript %]
 <h1>[% 'Report about warehouse contents' | $T8 %]</h1>
 
@@ -95,7 +96,7 @@
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Part Number' | $T8 %]:</th>
-        <td><input name="partnumber" size=20></td>
+        <td><input name="partnumber" size=20 value="[% partnumber %]"></td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Parts Classification' | $T8 %]:</th>
@@ -186,6 +187,18 @@
         <td nowrap><label for="l_stock_value">[% 'Stock value' | $T8 %]</label></td>
         <td align="right"><input name="l_purchase_price" id="l_purchase_price" class="checkbox" type="checkbox" value="Y"></td>
         <td nowrap><label for="l_purchase_price">[% 'Purchase price' | $T8 %]</label></td>
+        <td align="right"><input name="l_list_price" id="l_list_price" class="checkbox" type="checkbox" value="Y"></td>
+        <td nowrap><label for="l_list_price">[% 'List Price' | $T8 %]</label></td>
+       </tr>
+
+       <tr>
+        <td colspan="2" align="right">
+         [% L.radio_button_tag("stock_value_basis", value='purchase_price', checked=1, label=LxERP.t8('Purchase price')) %]
+         [% L.radio_button_tag("stock_value_basis", value='list_price',     checked=0, label=LxERP.t8('List Price')) %]
+        </td>
+        <td align="right">
+          [% "basis for stock value" | $T8 %]
+        </td>
        </tr>
 
       </table>

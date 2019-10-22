@@ -2,6 +2,51 @@
 # Veränderungen von kivitendo #
 ###############################
 
+xxxx-xx-xx - Release x.x.x
+
+Mittelgroße neue Features:
+
+- In den Benutzereinstellungen kann ausgewählt werden, ob der Part-Picker in
+  der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) auch nach
+  Kunden-Artikelnummern (Verkauf) und Lieferanten-Artikelnummern (Einkauf)
+  suchen soll. Ist dieses Feature eingeschaltet, so werden auch die Kunden-
+  bzw. Lieferanten-Artikelnummern als Spalte in den Positionen angezeigt.
+
+- Part Controller - neuer Tab mit Lagerinformationen - was ist wo gelagert
+
+- Neuer Workflow Lieferantenauftrag->Kreditorenbuchung: Für jedes Aufwandskonto
+  der Positionen im Lieferantenauftrag wird eine Zeile in der Kreditorenbuchung
+  erstellt. Gebucht wird standardmäßig auf des entsprechende Aufwandskonto. In
+  der Mandantenkonfiguration kann unter Standardkonten ein Konto ausgewählt
+  werden, auf das dann alle Zeilen gebucht werden.
+  Die Steuern werden übernommen, sofern diese für das ausgewählte Aufwandskonto
+  gültig sind. Ansonsten wird die Default-Steuer für das Aufwandskonto gesetzt.
+  Der Quellauftrag wird geschlossen, wenn der Betrag aller Kreditorenbuchungen,
+  die aus Workflows aus dem Quellauftrag entstanden sind, gleich dem Betrag
+  des Quellauftrags ist.
+
+- Der Jahresabschluß wurde komplett überarbeitet, es wird nun zwischen
+  Bestands- und Erfolgskonten unterschieden und ein Gewinn- bzw. Verlustvortrag
+  übertragen.
+
+Kleinere neue Features und Detailverbesserungen:
+
+- Mahnungen nach Abteilung filtern
+
+- Anzeige einer Kundenpreisliste in den Kundenstammdaten als Reiter.
+  Hier werden die Preisgruppenpreise angezeigt, falls einem Kunden eine
+  Preisgruppe zugeordnet ist.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) kann
+  ein Update-Knopf angezeigt werden, der die Positionen aus den
+  Artikelstammdaten aktualisert (alle oder pro Position). Aktualisert werden
+  Preis, Beschreibung und Langtext. Das Feature kann in den
+  Benutzereinstellungen eingeschaltet werden.
+
+- In der neuen Angebots-/Auftragsmaske (neuer Auftrags-Controller) ist die
+  Artikelnummer ein Link, der die Artikelstammdaten in einem neuen Tab öffnet.
+
+
 2019-08-07 - Release 3.5.4
 
 
@@ -26,10 +71,12 @@ Kleinere neue Features und Detailverbesserungen:
   Das Feld wird beim Bericht mitexportiert
 - Kundenstammdaten um Feld E-Mail Rechnungsempfänger erweitert
   Viele Kunden besitzen für den Rechnungseingang eine generische E-Mail-Adresse, die nicht
-  mit der allgemeine E-Mail-Adresse identisch ist. Falls dieses Feld gesetzt ist, so hat dieser
+  mit der allgemeinen E-Mail-Adresse identisch ist. Falls dieses Feld gesetzt ist, so hat dieser
   Wert beim manuellen E-Mail Versand der Rechnung Priorität (mandantenweit konfigurierbar).
   Für die wiederkehrende Rechnung wird diese E-Mail-Adresse zusätzlich gesetzt.
-   In den entsprechenden vorgelagerten Masken, wird dies auch visuell angezeigt (nicht bei alter Auftragsmaske!).
+  In den entsprechenden vorgelagerten Masken, wird dies auch visuell angezeigt (nicht bei alter Auftragsmaske!).
+- Kundenstammdaten um Feld "Herkunft der personenbezogenen Daten" erweitert
+  Um Details zum Erstkontakt des Kunden zu erfassen.
 - Kundenstammdaten um Feld Amtsgericht erweitert
   Falls das Feld Steuernummer mit dem Wert der Hr-Nr gefüllt wurde, wird auch das zuständige
   Registierungs-Gericht benötigt.
