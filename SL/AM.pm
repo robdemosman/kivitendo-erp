@@ -53,6 +53,8 @@ use SL::DB::Vendor;
 use SL::DB;
 use SL::GenericTranslations;
 use SL::Helper::UserPreferences::PositionsScrollbar;
+use SL::Helper::UserPreferences::PartPickerSearch;
+use SL::Helper::UserPreferences::UpdatePositions;
 
 use strict;
 
@@ -532,6 +534,18 @@ sub positions_scrollbar_height {
   SL::Helper::UserPreferences::PositionsScrollbar->new()->get_height();
 }
 
+sub purchase_search_makemodel {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_purchase_search_makemodel();
+}
+
+sub sales_search_customer_partnumber {
+  SL::Helper::UserPreferences::PartPickerSearch->new()->get_sales_search_customer_partnumber();
+}
+
+sub positions_show_update_button {
+  SL::Helper::UserPreferences::UpdatePositions->new()->get_show_update_button();
+}
+
 sub save_preferences {
   $main::lxdebug->enter_sub();
 
@@ -559,6 +573,15 @@ sub save_preferences {
 
   if (exists $form->{positions_scrollbar_height}) {
     SL::Helper::UserPreferences::PositionsScrollbar->new()->store_height($form->{positions_scrollbar_height})
+  }
+  if (exists $form->{purchase_search_makemodel}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_purchase_search_makemodel($form->{purchase_search_makemodel})
+  }
+  if (exists $form->{sales_search_customer_partnumber}) {
+    SL::Helper::UserPreferences::PartPickerSearch->new()->store_sales_search_customer_partnumber($form->{sales_search_customer_partnumber})
+  }
+  if (exists $form->{positions_show_update_button}) {
+    SL::Helper::UserPreferences::UpdatePositions->new()->store_show_update_button($form->{positions_show_update_button})
   }
 
   $main::lxdebug->leave_sub();
@@ -1009,13 +1032,16 @@ sub taxes {
                    t.taxkey,
                    t.taxdescription,
                    round(t.rate * 100, 2) AS rate,
-                   (SELECT accno FROM chart WHERE id = chart_id) AS taxnumber,
-                   (SELECT description FROM chart WHERE id = chart_id) AS account_description,
-                   (SELECT accno FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_accno,
-                   (SELECT description FROM chart WHERE id = skonto_sales_chart_id) AS skonto_chart_description,
-                   (SELECT accno FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_accno,
-                   (SELECT description FROM chart WHERE id = skonto_purchase_chart_id) AS skonto_chart_purchase_description
+                   tc.accno               AS taxnumber,
+                   tc.description         AS account_description,
+                   ssc.accno              AS skonto_chart_accno,
+                   ssc.description        AS skonto_chart_description,
+                   spc.accno              AS skonto_chart_purchase_accno,
+                   spc.description        AS skonto_chart_purchase_description
                  FROM tax t
+                 LEFT JOIN chart tc  ON (tc.id = t.chart_id)
+                 LEFT JOIN chart ssc ON (ssc.id = t.skonto_sales_chart_id)
+                 LEFT JOIN chart spc ON (spc.id = t.skonto_purchase_chart_id)
                  ORDER BY taxkey, rate|;
 
   my $sth = $dbh->prepare($query);
@@ -1156,14 +1182,13 @@ sub _save_tax {
   $chart_categories .= 'E' if $form->{expense};
   $chart_categories .= 'C' if $form->{costs};
 
-  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
+  my @values = ($form->{taxkey}, $form->{taxdescription}, $form->{rate}, conv_i($form->{chart_id}), conv_i($form->{skonto_sales_chart_id}), conv_i($form->{skonto_purchase_chart_id}), $chart_categories);
   if ($form->{id} ne "") {
     $query = qq|UPDATE tax SET
                   taxkey                   = ?,
                   taxdescription           = ?,
                   rate                     = ?,
                   chart_id                 = ?,
-                  taxnumber                = (SELECT accno FROM chart WHERE id = ? ),
                   skonto_sales_chart_id    = ?,
                   skonto_purchase_chart_id = ?,
                   chart_categories         = ?
@@ -1177,7 +1202,6 @@ sub _save_tax {
                   taxdescription,
                   rate,
                   chart_id,
-                  taxnumber,
                   skonto_sales_chart_id,
                   skonto_purchase_chart_id,
                   chart_categories,

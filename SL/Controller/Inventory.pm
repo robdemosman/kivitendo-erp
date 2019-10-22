@@ -20,6 +20,7 @@ use SL::DBUtils;
 use SL::Helper::Flash;
 use SL::Controller::Helper::ReportGenerator;
 use SL::Controller::Helper::GetModels;
+use List::MoreUtils qw(uniq);
 
 use English qw(-no_match_vars);
 
@@ -44,6 +45,12 @@ sub action_stock_in {
 
   $::form->{title}   = t8('Stock');
 
+  # Sometimes we want to open stock_in with a part already selected, but only
+  # the parts_id is passed in the url (and not also warehouse, bin and unit).
+  # Setting select_default_bin in the form will make sure the default warehouse
+  # and bin of that part will already be preselected, as normally
+  # set_target_from_part is only called when a part is changed.
+  $self->set_target_from_part if $::form->{select_default_bin};
   $::request->layout->focus('#part_id_name');
   my $transfer_types = WH->retrieve_transfer_types('in');
   map { $_->{description} = $main::locale->text($_->{description}) } @{ $transfer_types };
@@ -781,22 +788,55 @@ sub build_unit_select {
 sub mini_journal {
   my ($self) = @_;
 
-  # get last 10 transaction ids
-  my $query = 'SELECT trans_id, max(itime) FROM inventory GROUP BY trans_id ORDER BY max(itime) DESC LIMIT 10';
-  my @ids = selectall_array_query($::form, $::form->get_standard_dbh, $query);
+  # We want to fetch the last 10 inventory events (inventory rows with the same trans_id)
+  # To prevent a Seq Scan on inventory set an index on inventory.itime
+  # Each event may have one (transfer_in/out) or two (transfer) inventory rows
+  # So fetch the last 20, group by trans_id, limit to the last 10 trans_ids,
+  # and then extract the inventory ids from those 10 trans_ids
+  # By querying Inventory->get_all via the id instead of trans_id we can make
+  # use of the existing index on id
 
-  my $objs;
-  $objs = SL::DB::Manager::Inventory->get_all(query => [ trans_id => \@ids ]) if @ids;
+  # inventory ids of the most recent 10 inventory trans_ids
+  my $query = <<SQL;
+with last_inventories as (
+   select id,
+          trans_id,
+          itime
+     from inventory
+ order by itime desc
+    limit 20
+),
+grouped_ids as (
+   select trans_id,
+          array_agg(id) as ids
+     from last_inventories
+ group by trans_id
+ order by max(itime)
+     desc limit 10
+)
+select unnest(ids)
+  from grouped_ids
+ limit 20  -- so the planner knows how many ids to expect, the cte is an optimisation fence
+SQL
 
-  # at most 2 of them belong to a transaction and the qty determins in or out.
-  # sort them for display
+  my $objs  = SL::DB::Manager::Inventory->get_all(
+    query        => [ id => [ \"$query" ] ],
+    with_objects => [ 'parts', 'trans_type', 'bin', 'bin.warehouse' ], # prevent lazy loading in template
+    sort_by      => 'itime DESC',
+  );
+  # remember order of trans_ids from query, for ordering hash later
+  my @sorted_trans_ids = uniq map { $_->trans_id } @$objs;
+
+  # at most 2 of them belong to a transaction and the qty determines in or out.
   my %transactions;
   for (@$objs) {
     $transactions{ $_->trans_id }{ $_->qty > 0 ? 'in' : 'out' } = $_;
     $transactions{ $_->trans_id }{base} = $_;
   }
-  # and get them into order again
-  my @sorted = map { $transactions{$_} } @ids;
+
+  # because the inventory transactions were built in a hash, we need to sort the
+  # hash by using the original sort order of the trans_ids
+  my @sorted = map { $transactions{$_} } @sorted_trans_ids;
 
   return \@sorted;
 }

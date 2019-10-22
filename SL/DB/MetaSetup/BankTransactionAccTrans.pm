@@ -14,12 +14,11 @@ __PACKAGE__->meta->columns(
   ar_id               => { type => 'integer' },
   bank_transaction_id => { type => 'integer', not_null => 1 },
   gl_id               => { type => 'integer' },
-  id                  => { type => 'serial', not_null => 1 },
   itime               => { type => 'timestamp', default => 'now()' },
   mtime               => { type => 'timestamp' },
 );
 
-__PACKAGE__->meta->primary_key_columns([ 'id' ]);
+__PACKAGE__->meta->primary_key_columns([ 'bank_transaction_id', 'acc_trans_id' ]);
 
 __PACKAGE__->meta->allow_inline_column_values(1);
 

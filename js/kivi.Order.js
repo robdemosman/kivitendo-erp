@@ -51,6 +51,7 @@ namespace('kivi.Order', function(ns) {
     if (warn_on_reqdate    && !ns.check_valid_reqdate())   return;
 
     var data = $('#order_form').serializeArray();
+    data.push({ name: 'order.language_id', value: $('#language_id').val() }); // language from print options
     data.push({ name: 'action', value: 'Order/' + action });
 
     $.post("controller.pl", data, kivi.eval_json_result);
@@ -82,17 +83,10 @@ namespace('kivi.Order', function(ns) {
 
     var data = $('#order_form').serializeArray();
     data = data.concat($('#print_options_form').serializeArray());
+    data.push({ name: 'order.language_id', value: $('#language_id').val() }); // language from print options
     data.push({ name: 'action', value: 'Order/print' });
 
     $.post("controller.pl", data, kivi.eval_json_result);
-  };
-
-  ns.download_pdf = function(pdf_filename, key) {
-    var data = [{ name: 'action',       value: 'Order/download_pdf' },
-                { name: 'type',         value: $('#type').val()     },
-                { name: 'pdf_filename', value: pdf_filename         },
-                { name: 'key',          value: key                  }];
-    $.download("controller.pl", data);
   };
 
   ns.email = function(warn_on_duplicates) {
@@ -155,6 +149,7 @@ namespace('kivi.Order', function(ns) {
     var data = $('#order_form').serializeArray();
     data = data.concat($('[name^="email_form."]').serializeArray());
     data = data.concat($('[name^="print_options."]').serializeArray());
+    data.push({ name: 'order.language_id', value: $('#language_id').val() }); // language from print options
     data.push({ name: 'action', value: 'Order/send_email' });
     $.post("controller.pl", data, kivi.eval_json_result);
   };
@@ -331,6 +326,12 @@ namespace('kivi.Order', function(ns) {
         h += '</span>';
         $(elt).find('[name="linemargin"]').html(h);
       }
+    });
+  };
+
+  ns.redisplay_cvpartnumbers = function(data) {
+    $('.row_entry').each(function(idx, elt) {
+      $(elt).find('[name="cvpartnumber"]').html(data[idx][0]);
     });
   };
 
@@ -717,6 +718,34 @@ namespace('kivi.Order', function(ns) {
       }
     });
     return true;
+  };
+
+  ns.update_row_from_master_data = function(clicked) {
+    var row = $(clicked).parents("tbody").first();
+    var item_id_dom = $(row).find('[name="orderitem_ids[+]"]');
+
+    var data = $('#order_form').serializeArray();
+    data.push({ name: 'action', value: 'Order/update_row_from_master_data' });
+    data.push({ name: 'item_ids[]', value: item_id_dom.val() });
+
+    $.post("controller.pl", data, kivi.eval_json_result);
+  };
+
+  ns.update_all_rows_from_master_data = function() {
+    var item_ids = $.map($('.row_entry'), function(elt) {
+      var item_id = $(elt).find('[name="orderitem_ids[+]"]').val();
+      return { name: 'item_ids[]', value: item_id };
+    });
+
+    if (item_ids.length == 0) {
+      return;
+    }
+
+    var data = $('#order_form').serializeArray();
+    data.push({ name: 'action', value: 'Order/update_row_from_master_data' });
+    data = data.concat(item_ids);
+
+    $.post("controller.pl", data, kivi.eval_json_result);
   };
 
   ns.show_calculate_qty_dialog = function(clicked) {

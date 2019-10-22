@@ -47,6 +47,7 @@ use SL::DB::BankTransactionAccTrans;
 use SL::DB::Chart;
 use SL::DB::Currency;
 use SL::DB::Default;
+use SL::DB::Order;
 use SL::DB::PurchaseInvoice;
 use SL::DB::RecordTemplate;
 use SL::DB::Tax;
@@ -649,7 +650,6 @@ sub update {
       # calculate tax exactly the same way as AP in post_transaction via form->calculate_tax
       my $tmpnetamount;
       ($tmpnetamount,$form->{"tax_$i"}) = $form->calculate_tax($form->{"amount_$i"},$rate,$form->{taxincluded},2);
-
       $totaltax += $form->{"tax_$i"};
       map { $a[$j]->{$_} = $form->{"${_}_$i"} } @flds;
       $count++;
@@ -899,7 +899,7 @@ sub use_as_new {
 
   $main::auth->assert('ap_transactions');
 
-  map { delete $form->{$_} } qw(printed emailed queued invnumber deliverydate id datepaid_1 gldate_1 acc_trans_id_1 source_1 memo_1 paid_1 exchangerate_1 AP_paid_1 storno);
+  map { delete $form->{$_} } qw(printed emailed queued invnumber deliverydate id datepaid_1 gldate_1 acc_trans_id_1 source_1 memo_1 paid_1 exchangerate_1 AP_paid_1 storno convert_from_oe_id);
   $form->{paidaccounts} = 1;
   $form->{rowcount}--;
 
@@ -1001,12 +1001,12 @@ sub ap_transactions {
 
   my @columns =
     qw(transdate id type invnumber ordnumber name netamount tax amount paid datepaid
-       due duedate transaction_description notes employee globalprojectnumber
+       due duedate transaction_description notes employee globalprojectnumber department
        vendornumber country ustid taxzone payment_terms charts direct_debit);
 
   my @hidden_variables = map { "l_${_}" } @columns;
   push @hidden_variables, "l_subtotal", qw(open closed vendor invnumber ordnumber transaction_description notes project_id transdatefrom transdateto
-                                           parts_partnumber parts_description);
+                                           parts_partnumber parts_description department_id);
 
   my $href = build_std_url('action=ap_transactions', grep { $form->{$_} } @hidden_variables);
 
@@ -1028,6 +1028,7 @@ sub ap_transactions {
     'notes'                   => { 'text' => $locale->text('Notes'), },
     'employee'                => { 'text' => $locale->text('Employee'), },
     'globalprojectnumber'     => { 'text' => $locale->text('Document Project Number'), },
+    'department'              => { 'text' => $locale->text('Department'), },
     'vendornumber'            => { 'text' => $locale->text('Vendor Number'), },
     'country'                 => { 'text' => $locale->text('Country'), },
     'ustid'                   => { 'text' => $locale->text('USt-IdNr.'), },
@@ -1037,7 +1038,7 @@ sub ap_transactions {
     'direct_debit'            => { 'text' => $locale->text('direct debit'), },
   );
 
-  foreach my $name (qw(id transdate duedate invnumber ordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit)) {
+  foreach my $name (qw(id transdate duedate invnumber ordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit department)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $href . "&sort=$name&sortdir=$sortdir";
   }
@@ -1054,10 +1055,13 @@ sub ap_transactions {
 
   $report->set_sort_indicator($form->{sort}, $form->{sortdir});
 
+  my $department_description;
+  $department_description = SL::DB::Manager::Department->find_by(id => $form->{department_id})->description if $form->{department_id};
+
   my @options;
   push @options, $locale->text('Vendor')                  . " : $form->{vendor}"                         if ($form->{vendor});
   push @options, $locale->text('Contact Person')          . " : $form->{cp_name}"                        if ($form->{cp_name});
-  push @options, $locale->text('Department')              . " : $form->{department}"                     if ($form->{department});
+  push @options, $locale->text('Department')              . " : $department_description"                 if ($form->{department_id});
   push @options, $locale->text('Invoice Number')          . " : $form->{invnumber}"                      if ($form->{invnumber});
   push @options, $locale->text('Order Number')            . " : $form->{ordnumber}"                      if ($form->{ordnumber});
   push @options, $locale->text('Notes')                   . " : $form->{notes}"                          if ($form->{notes});
@@ -1181,6 +1185,73 @@ sub storno {
   $form->redirect(sprintf $locale->text("Transaction %d cancelled."), $form->{storno_id});
 
   $main::lxdebug->leave_sub();
+}
+
+sub add_from_purchase_order {
+  $main::auth->assert('ap_transactions');
+
+  return if !$::form->{id};
+
+  my $order_id = delete $::form->{id};
+  my $order    = SL::DB::Order->new(id => $order_id)->load(with => [ 'vendor', 'currency', 'payment_terms' ]);
+
+  return if $order->type ne 'purchase_order';
+
+  my $today                     = DateTime->today_local;
+  $::form->{title}              = "Add";
+  $::form->{vc}                 = 'vendor';
+  $::form->{vendor_id}          = $order->customervendor->id;
+  $::form->{vendor}             = $order->vendor->name;
+  $::form->{convert_from_oe_id} = $order->id;
+  $::form->{globalproject_id}   = $order->globalproject_id;
+  $::form->{ordnumber}          = $order->number;
+  $::form->{department_id}      = $order->department_id;
+  $::form->{currency}           = $order->currency->name;
+  $::form->{taxincluded}        = 1; # we use amount below, so tax is included
+  $::form->{transdate}          = $today->to_kivitendo;
+  $::form->{duedate}            = $today->to_kivitendo;
+  $::form->{duedate}            = $order->payment_terms->calc_date(reference_date => $today)->to_kivitendo if $order->payment_terms;
+  create_links();
+
+  my $config_po_ap_workflow_chart_id = $::instance_conf->get_workflow_po_ap_chart_id;
+
+  my ($first_taxchart, $default_taxchart, $taxchart_to_use);
+  my @taxcharts = ();
+  @taxcharts    = GL->get_active_taxes_for_chart($config_po_ap_workflow_chart_id, $::form->{transdate}) if (defined $config_po_ap_workflow_chart_id);
+  foreach my $item (@taxcharts) {
+    $first_taxchart   //= $item;
+    $default_taxchart   = $item if $item->{is_default};
+  }
+  $taxchart_to_use      = $default_taxchart // $first_taxchart;
+
+  my %pat = $order->calculate_prices_and_taxes;
+  my $row = 1;
+  foreach my $amount_chart (keys %{$pat{amounts}}) {
+    my $tax = SL::DB::Manager::Tax->find_by(id => $pat{amounts}->{$amount_chart}->{tax_id});
+    # If tax chart from order for this amount is active, use it. Use default or first tax chart for selected chart else.
+    if (defined $config_po_ap_workflow_chart_id) {
+      $taxchart_to_use = (first {$_->{id} == $tax->id} @taxcharts) // $taxchart_to_use;
+    } else {
+      $taxchart_to_use = $tax;
+    }
+
+    $::form->{"AP_amount_chart_id_$row"}          = $config_po_ap_workflow_chart_id // $amount_chart;
+    $::form->{"previous_AP_amount_chart_id_$row"} = $::form->{"AP_amount_chart_id_$row"};
+    $::form->{"amount_$row"}                      = $::form->format_amount(\%::myconfig, $pat{amounts}->{$amount_chart}->{amount} * (1 + $tax->rate), 2);
+    $::form->{"taxchart_$row"}                    = $taxchart_to_use->id . '--' . $taxchart_to_use->rate;
+    $::form->{"project_id_$row"}                  = $order->globalproject_id;
+
+    $row++;
+  }
+
+  my $last_used_ap_chart               = SL::DB::Vendor->load_cached($::form->{vendor_id})->last_used_ap_chart;
+  $::form->{"AP_amount_chart_id_$row"} = $last_used_ap_chart->id if $last_used_ap_chart;
+  $::form->{rowcount}                  = $row;
+
+  update(
+    keep_rows_without_amount => 1,
+    dont_add_new_row         => 1,
+  );
 }
 
 sub setup_ap_search_action_bar {

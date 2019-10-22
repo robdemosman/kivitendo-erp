@@ -334,7 +334,6 @@ namespace('kivi.Part', function(ns) {
     },
     ajax_data: function(term) {
       var data = {
-        'filter.all:substr:multi::ilike': term,
         current:  this.$real.val(),
       };
 
@@ -355,6 +354,15 @@ namespace('kivi.Part', function(ns) {
 
       if (this.o.convertible_unit)
         data['filter.unit_obj.convertible_to'] = this.o.convertible_unit;
+
+      var filter_name = 'all';
+      if (this.o.with_makemodel) {
+        filter_name = 'all_with_makemodel';
+      }
+      if (this.o.with_customer_partnumber) {
+        filter_name = 'all_with_customer_partnumber';
+      }
+      data['filter.' + filter_name + ':substr:multi::ilike'] = term;
 
       return data;
     },
@@ -687,6 +695,11 @@ namespace('kivi.Part', function(ns) {
       var self = this;
       var data = $('#multi_items_form').serializeArray();
       data.push({ name: 'type', value: self.pp.type });
+      var ppdata = self.pp.ajax_data(function(){
+        var val = $('#multi_items_filter').val();
+        return val === undefined ? '' : val
+      });
+      $.each(Object.keys(ppdata), function() {data.push({ name: 'multi_items.' + this, value: ppdata[this]});});
       $.ajax({
         url: 'controller.pl?action=Part/multi_items_update_result',
         data: data,
