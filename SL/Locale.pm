@@ -237,10 +237,11 @@ sub lang_to_locale {
   my ($self, $requested_lang) = @_;
 
   my $requested_locale;
+  $requested_locale = 'nl' if $requested_lang =~ m/^_(nl|NL|dutch|nederlands|nl_NL)/i;
   $requested_locale = 'de' if $requested_lang =~ m/^_(de|deu|ger)/i;
   $requested_locale = 'en' if $requested_lang =~ m/^_(en|uk|us|gr)/i;
   $requested_locale = 'fr' if $requested_lang =~ m/^_fr/i;
-  $requested_locale ||= 'de';
+  #$requested_locale ||= 'nl';
 
   return $requested_locale;
 }
