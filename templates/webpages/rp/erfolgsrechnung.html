@@ -5,8 +5,8 @@
 <h2 align="center">
   <br>[% company %]
   <br>[% address %]
-  <p>[% 'ERFOLGSRECHNUNG' %]
-  <br>[% fromdate %] bis [% todate %]
+  <p>[% 'Verlies- en Winstrekening' %]
+  <br>[% fromdate %] tot [% todate %]
 </h2>
 <table border="0">
   <tr>
@@ -29,12 +29,12 @@
       <td><hr noshade size="1"></td>
     </tr>
     <tr valign="top">
-      <th align="left" colspan="2">TOTAL</th>
+      <th align="left" colspan="2">Totaal</th>
       <td align="right">[% category.total %]<hr noshade size="2"></td>
     </tr>
   [%- END %]
   <tr valign="top">
-    <th align="left" colspan="2">GEWINN/VERLUST</th>
+    <th align="left" colspan="2">Winst/Verlies</th>
     <td align="right">[% total %]<br><hr noshade size="2"></td>
   </tr>
 </table>

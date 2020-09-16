@@ -674,6 +674,28 @@ sub ustva {
 
   }
 
+  # Berekening NL totalen robdemos
+use Number::Format qw(:subs);
+# berekening 4b maal 21% OB
+  $form->{"grondslag"} = $form->{"421"};
+  $form->{"S422"} = round($form->{"grondslag"} * 0.21, 2);
+  # Totaal af te dragen rubrieken 1 t/m 4
+ $form->{"S51"} = $form->{"112"} + $form->{"122"} + $form->{"132"}
+                     + $form->{"142"}  + $form->{"212"}  + $form->{"412"}
+                     + $form->{"S422"};
+                     
+  # berekening voorbelasting ivm de 21 procent die er bij 4b bij is gekomen deze moet hier ook erbij
+  $form->{"tevorderen"} = $form->{"522"};
+  $form->{"OBvoorbel"} = $form->{"tevorderen"} + $form->{"S422"};               
+  # berekening subtotaal 5c                   
+ $form->{"OBsubt"} = $form->{"S51"}  - $form->{"OBvoorbel"};		
+ # berekening te betalen/ontvangen bedrag
+ $form->{"OBteBet"} = round($form->{"OBsubt"}  - $form->{"542"}, 0);		
+ 
+ 
+  
+
+
 
   # Fixme: Wird auch noch für Oesterreich gebraucht,
   # weil kein eigenes Ausgabeformular

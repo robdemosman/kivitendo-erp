@@ -689,28 +689,28 @@ sub update {
     }
 
     if (($debitcount >= 2) && ($creditcount == 2)) {
-      $form->{"credit_$i"} = 0;
-      $form->{"tax_$i"}    = 0;
-      $creditcount--;
-      $form->{creditlock} = 1;
+      $form->{"credit_$i"} = 0; #robdemos
+      $form->{"tax_$i"}    = 0; #robdemos
+      $creditcount--; #robdemos
+      $form->{creditlock} = 1; #robdemos was 1
     }
     if (($creditcount >= 2) && ($debitcount == 2)) {
-      $form->{"debit_$i"} = 0;
-      $form->{"tax_$i"}   = 0;
-      $debitcount--;
-      $form->{debitlock} = 1;
+      $form->{"debit_$i"} = 0; #robdemos
+      $form->{"tax_$i"}   = 0; #robdemos
+      $debitcount--; #robdemos
+      $form->{debitlock} = 1; #robdemos
     }
     if (($creditcount == 1) && ($debitcount == 2)) {
-      $form->{creditlock} = 1;
+     #$form->{creditlock} = 1; #robdemos was 1
     }
     if (($creditcount == 2) && ($debitcount == 1)) {
-      $form->{debitlock} = 1;
+      $form->{debitlock} = 1; #robdemos
     }
     if ($debitcredit && $credittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00"; #robdemos
     }
     if (!$debitcredit && $debittax) {
-      $form->{"taxchart_$i"} = "$notax_id--0.00";
+      $form->{"taxchart_$i"} = "$notax_id--0.00"; #robdemos
     }
     $amount =
       ($form->{"debit_$i"} == 0)
@@ -1226,26 +1226,26 @@ sub post_transaction {
     if ($debitcredit) {
       $debitcount++;
     } else {
-      $creditcount++;
+      #$creditcount++;    #robdemos
     }
 
     if (($debitcount >= 2) && ($creditcount == 2)) {
       $form->{"credit_$i"} = 0;
-      $form->{"tax_$i"}    = 0;
-      $creditcount--;
-      $form->{creditlock} = 1;
+      #$form->{"tax_$i"}    = 0; #robdemos
+      #$creditcount--; #robdemos
+      #$form->{creditlock} = 1; #robdemos
     }
     if (($creditcount >= 2) && ($debitcount == 2)) {
       $form->{"debit_$i"} = 0;
-      $form->{"tax_$i"}   = 0;
-      $debitcount--;
-      $form->{debitlock} = 1;
+      #$form->{"tax_$i"}   = 0; #robdemos
+      #$debitcount--; #robdemos
+      #$form->{debitlock} = 1; #robdemos
     }
     if (($creditcount == 1) && ($debitcount == 2)) {
-      $form->{creditlock} = 1;
+      #$form->{creditlock} = 1; #robdemos
     }
     if (($creditcount == 2) && ($debitcount == 1)) {
-      $form->{debitlock} = 1;
+      #$form->{debitlock} = 1; #robdemos
     }
     if ($debitcredit && $credittax) {
       $form->{"taxchart_$i"} = "$notax_id--0.00";
@@ -1286,10 +1286,10 @@ sub post_transaction {
     $count++;
   }
 
-  if ($split_safety{-1} > 1 && $split_safety{1} > 1) {
-    $::form->error($::locale->text("Split entry detected. The values you have entered will result in an entry with more than one position on both debit and credit. " .
-                                   "Due to known problems involving accounting software kivitendo does not allow these."));
-  }
+#  if ($split_safety{-1} > 1 && $split_safety{1} > 1) {
+#    $::form->error($::locale->text("Split entry detected. The values you have entered will result in an entry with more than one position on both debit and credit. " .
+#                                   "Due to known problems involving accounting software kivitendo does not allow these."));
+#  } #robdemos
 
   for my $i (1 .. $count) {
     my $j = $i - 1;
@@ -1322,7 +1322,10 @@ sub post_transaction {
   $form->error($locale->text('Cannot post transaction for a closed period!'))
     if ($form->date_closed($form->{"transdate"}, \%myconfig));
   if ($form->round_amount($debit, 2) != $form->round_amount($credit, 2)) {
+  	$form->error($form->round_amount($credit, 2));
+    $form->error($form->round_amount($debit, 2));
     $form->error($locale->text('Out of balance transaction!'));
+    
   }
 
   if ($form->round_amount($debit, 2) + $form->round_amount($credit, 2) == 0) {

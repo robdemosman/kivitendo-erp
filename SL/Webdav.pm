@@ -17,21 +17,21 @@ use Rose::Object::MakeMethods::Generic (
 );
 
 my %type_to_path = (
-  sales_quotation         => 'angebote',
-  sales_order             => 'bestellungen',
-  request_quotation       => 'anfragen',
-  purchase_order          => 'lieferantenbestellungen',
-  sales_delivery_order    => 'verkaufslieferscheine',
-  purchase_delivery_order => 'einkaufslieferscheine',
-  credit_note             => 'gutschriften',
-  invoice                 => 'rechnungen',
-  purchase_invoice        => 'einkaufsrechnungen',
-  part                    => 'waren',
-  service                 => 'dienstleistungen',
-  assembly                => 'erzeugnisse',
-  letter                  => 'briefe',
+  sales_quotation         => 'offertes',
+  sales_order             => 'verkooporders',
+  request_quotation       => 'aanvragen',
+  purchase_order          => 'aankooporders',
+  sales_delivery_order    => 'verkooppakbonnen',
+  purchase_delivery_order => 'inkooppakbonnen',
+  credit_note             => 'creditfacturen',
+  invoice                 => 'rekeningen',
+  purchase_invoice        => 'inkooprekeningen',
+  part                    => 'artikelen',
+  service                 => 'diensten',
+  assembly                => 'assemblages',
+  letter                  => 'brieven',
   general_ledger          => 'dialogbuchungen',
-  accounts_payable        => 'kreditorenbuchungen',
+  accounts_payable        => 'crediteuren',
 );
 
 sub get_all_files {
@@ -97,7 +97,7 @@ sub webdav_path {
 
   die "Unknown type"              unless $type;
 
-  my $path = File::Spec->catdir("webdav", $::auth->client->{id}, $type, $self->_sanitized_number);
+  my $path = File::Spec->catdir("webdav", $::auth->client->{name}, $type, $self->_sanitized_number);
 
   if (!-d $path) {
     Common::mkdir_with_parents($path);

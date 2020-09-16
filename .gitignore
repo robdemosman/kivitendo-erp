@@ -9,6 +9,7 @@
 /locale/*/lost
 /spool/*
 /templates/demo*
+/templates/mas*
 /users/*_finanzamt.ini
 /users/.cache/
 /users/.fonts.cache*
@@ -23,7 +24,9 @@
 /users/templates-cache/
 /users/templates-cache-for-tests/
 /users/xvfb_display
+/webdav
 /webdav/*
+webdav
 crm
 pod2html*
 tags

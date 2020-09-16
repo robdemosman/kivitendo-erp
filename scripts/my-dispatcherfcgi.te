@@ -1,0 +1,46 @@
+
+module my-dispatcherfcgi 1.0;
+
+require {
+	type user_home_dir_t;
+	type httpd_t;
+	type krb5_keytab_t;
+	type httpd_sys_content_t;
+	type home_root_t;
+	type user_home_t;
+	type httpd_sys_script_t;
+	class dir { add_name create getattr open read remove_name search setattr write };
+	class file { create getattr ioctl open read rename setattr write };
+}
+
+#============= httpd_sys_script_t ==============
+
+#!!!! This avc is allowed in the current policy
+allow httpd_sys_script_t home_root_t:dir { add_name create read setattr write };
+
+#!!!! This avc is allowed in the current policy
+#!!!! This av rule may have been overridden by an extended permission av rule
+allow httpd_sys_script_t home_root_t:file { create getattr ioctl open read write };
+
+#!!!! This avc is allowed in the current policy
+allow httpd_sys_script_t krb5_keytab_t:dir search;
+
+#!!!! This avc is allowed in the current policy
+allow httpd_sys_script_t user_home_dir_t:dir search;
+allow httpd_sys_script_t user_home_dir_t:dir { add_name create write };
+
+#!!!! This avc is allowed in the current policy
+allow httpd_sys_script_t user_home_t:dir { add_name create getattr open read search write };
+allow httpd_sys_script_t user_home_t:file create;
+
+#!!!! This avc is allowed in the current policy
+#!!!! This av rule may have been overridden by an extended permission av rule
+allow httpd_sys_script_t user_home_t:file { getattr ioctl open write };
+
+#============= httpd_t ==============
+
+#!!!! This avc is allowed in the current policy
+allow httpd_t httpd_sys_content_t:dir { add_name create remove_name write };
+
+#!!!! This avc is allowed in the current policy
+allow httpd_t httpd_sys_content_t:file { create rename setattr write };

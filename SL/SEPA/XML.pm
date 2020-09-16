@@ -143,7 +143,8 @@ sub to_xml {
   my $is_coll   = $self->{collection};
   my $cd_src    = $is_coll ? 'Cdtr'              : 'Dbtr';
   my $cd_dst    = $is_coll ? 'Dbtr'              : 'Cdtr';
-  my $pain_id   = $is_coll ? 'pain.008.002.02'   : 'pain.001.002.03';
+ # my $pain_id   = $is_coll ? 'pain.008.002.02'   : 'pain.001.002.03';   ivm het niet accepteren van de bestanden door ABN-AMRO
+  my $pain_id   = $is_coll ? 'pain.008.002.02'   : 'pain.001.001.03';
   my $pain_elmt = $is_coll ? 'CstmrDrctDbtInitn' : 'CstmrCdtTrfInitn';
   my @pii_base  = (strftime('PII%Y%m%d%H%M%S', @now), rand(1000000000));
 

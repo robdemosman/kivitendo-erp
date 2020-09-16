@@ -1,0 +1,41 @@
+table {
+	text-align: right;
+	border:0;
+	border-collapse:collapse;
+}
+td {
+	font-size:100%;
+	vertical-align:top;
+}
+td.textgroep {
+	text-align: left;
+	background-color:#ffe6ff;
+	border:solid thick #ffe6ff; 
+}
+td.textregel {
+	text-align: left;
+	background-color:#e6e6ff;
+}
+td.text2 {
+	text-align: left;
+	background-color:#ADBEBD;
+}
+td.spalte,
+td.zeile,
+td.betrag {
+	padding: 2px;
+}
+td.spalte { font-weight:bold; font-size:120%; }
+td.zeile  { font-weight:bold; }
+td.betrag { width:10em; }
+td.summe  { border-top:double medium black; }
+td.spacer { border:solid thick #e6e6ff }
+td.leeg   { background-color: #e6e6ff}
+
+tr.uebertrag td { border-top:solid medium black; }
+b.h3 { font-size:120%; }
+.ausfuellen { background-color:#ccccff; }
+.nodis { display:none; }
+tr.rand{  border:solid thick #e6e6ff } 
+
+
