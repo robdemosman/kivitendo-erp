@@ -21,7 +21,7 @@ cookie_name = kivitendo_session_id
 
 # The number of minutes a session is valid. The default value is eight
 # hours.
-session_timeout = 480
+session_timeout = 10800
 
 # The number of seconds to penalize failed login attempts. 0 disables
 # it.
@@ -35,7 +35,7 @@ failed_login_penalty = 5
 #
 # If 'module' is set to 'DB' then this database also contains the
 # users' passwords.
-host     = localhost
+host     = 192.168.170.10
 port     = 5432
 db       = kivitendo_auth
 user     = postgres
@@ -80,7 +80,7 @@ verify        = require
 [system]
 # Set language for login and admin forms. Currently "de" (German)
 # and "en" (English, not perfect) are available.
-language = de
+language = nl
 # MassPrint Timeout
 # must be less than cgi timeout
 #
@@ -88,7 +88,7 @@ massprint_timeout = 30
 
 # Set default_manager for admin forms. Currently "german"
 # and "swiss" are available.
-default_manager = german
+default_manager = swiss
 
 # The memory limits given here determine the maximum process size
 # (vsz, the total amount of memory this process uses including memory
