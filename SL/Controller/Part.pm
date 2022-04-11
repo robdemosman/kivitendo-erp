@@ -12,6 +12,7 @@ use SL::Controller::Helper::GetModels;
 use SL::Locale::String qw(t8);
 use SL::JSON;
 use List::Util qw(sum);
+use List::UtilsBy qw(extract_by);
 use SL::Helper::Flash;
 use Data::Dumper;
 use DateTime;
@@ -39,6 +40,9 @@ use Rose::Object::MakeMethods::Generic (
 # safety
 __PACKAGE__->run_before(sub { $::auth->assert('part_service_assembly_edit') },
                         except => [ qw(ajax_autocomplete part_picker_search part_picker_result) ]);
+
+__PACKAGE__->run_before(sub { $::auth->assert('developer') },
+                        only => [ qw(test_page) ]);
 
 __PACKAGE__->run_before('check_part_id', only   => [ qw(edit delete) ]);
 
@@ -124,11 +128,6 @@ sub action_save {
   # $self->part has been loaded, parsed and validated without errors and is ready to be saved
   $self->part->db->with_transaction(sub {
 
-    if ( $params{save_as_new} ) {
-      $self->part( $self->part->clone_and_reset_deep );
-      $self->part->partnumber(undef); # will be assigned by _before_save_set_partnumber
-    };
-
     $self->part->save(cascade => 1);
 
     SL::DB::History->new(
@@ -150,7 +149,6 @@ sub action_save {
     1;
   }) or return $self->js->error(t8('The item couldn\'t be saved!') . " " . $self->part->db->error )->render;
 
-  ;
   flash_later('info', $is_new ? t8('The item has been created.') . " " . $self->part->displayable_name : t8('The item has been saved.'));
 
   if ( $::form->{callback} ) {
@@ -162,9 +160,12 @@ sub action_save {
   }
 }
 
-sub action_save_as_new {
+sub action_abort {
   my ($self) = @_;
-  $self->action_save(save_as_new=>1);
+
+  if ( $::form->{callback} ) {
+    $self->redirect_to($::form->unescape($::form->{callback}));
+  }
 }
 
 sub action_delete {
@@ -230,8 +231,11 @@ sub render_form {
 
   $params{CUSTOM_VARIABLES}  = CVar->get_custom_variables(module => 'IC', trans_id => $self->part->id);
 
-  CVar->render_inputs('variables' => $params{CUSTOM_VARIABLES}, show_disabled_message => 1, partsgroup_id => $self->part->partsgroup_id)
-    if (scalar @{ $params{CUSTOM_VARIABLES} });
+  if (scalar @{ $params{CUSTOM_VARIABLES} }) {
+    CVar->render_inputs('variables' => $params{CUSTOM_VARIABLES}, show_disabled_message => 1, partsgroup_id => $self->part->partsgroup_id);
+    $params{CUSTOM_VARIABLES_FIRST_TAB}       = [];
+    @{ $params{CUSTOM_VARIABLES_FIRST_TAB} }  = extract_by { $_->{first_tab} == 1 } @{ $params{CUSTOM_VARIABLES} };
+  }
 
   my %title_hash = ( part       => t8('Edit Part'),
                      assembly   => t8('Edit Assembly'),
@@ -280,8 +284,9 @@ sub action_update_item_totals {
   my $part_type = $::form->{part_type};
   die unless $part_type =~ /^(assortment|assembly)$/;
 
-  my $sellprice_sum = $self->recalc_item_totals(part_type => $part_type, price_type => 'sellcost');
-  my $lastcost_sum  = $self->recalc_item_totals(part_type => $part_type, price_type => 'lastcost');
+  my $sellprice_sum    = $self->recalc_item_totals(part_type => $part_type, price_type => 'sellcost');
+  my $lastcost_sum     = $self->recalc_item_totals(part_type => $part_type, price_type => 'lastcost');
+  my $items_weight_sum = $self->recalc_item_totals(part_type => $part_type, price_type => 'weight');
 
   my $sum_diff      = $sellprice_sum-$lastcost_sum;
 
@@ -291,6 +296,7 @@ sub action_update_item_totals {
     ->html('#items_sum_diff',            $::form->format_amount(\%::myconfig, $sum_diff,      2, 0))
     ->html('#items_sellprice_sum_basic', $::form->format_amount(\%::myconfig, $sellprice_sum, 2, 0))
     ->html('#items_lastcost_sum_basic',  $::form->format_amount(\%::myconfig, $lastcost_sum,  2, 0))
+    ->html('#items_weight_sum_basic'   , $::form->format_amount(\%::myconfig, $items_weight_sum))
     ->no_flash_clear->render();
 }
 
@@ -396,6 +402,7 @@ sub action_add_assembly_item {
   my $items_sellprice_sum = $part->items_sellprice_sum;
   my $items_lastcost_sum  = $part->items_lastcost_sum;
   my $items_sum_diff      = $items_sellprice_sum - $items_lastcost_sum;
+  my $items_weight_sum    = $part->items_weight_sum;
 
   $self->js
     ->append('#assembly_rows', $html)  # append in tbody
@@ -406,6 +413,7 @@ sub action_add_assembly_item {
     ->html('#items_sum_diff',      $::form->format_amount(\%::myconfig, $items_sum_diff     , 2, 0))
     ->html('#items_sellprice_sum_basic', $::form->format_amount(\%::myconfig, $items_sellprice_sum, 2, 0))
     ->html('#items_lastcost_sum_basic' , $::form->format_amount(\%::myconfig, $items_lastcost_sum , 2, 0))
+    ->html('#items_weight_sum_basic'   , $::form->format_amount(\%::myconfig, $items_weight_sum))
     ->render;
 }
 
@@ -423,15 +431,15 @@ sub action_show_multi_items_dialog {
 }
 
 sub action_multi_items_update_result {
-  my $max_count = 100;
+  my $max_count = $::form->{limit};
 
   my $count = $_[0]->multi_items_models->count;
 
   if ($count == 0) {
     my $text = escape($::locale->text('No results.'));
     $_[0]->render($text, { layout => 0 });
-  } elsif ($count > $max_count) {
-    my $text = escpae($::locale->text('Too many results (#1 from #2).', $count, $max_count));
+  } elsif ($max_count && $count > $max_count) {
+    my $text = escape($::locale->text('Too many results (#1 from #2).', $count, $max_count));
     $_[0]->render($text, { layout => 0 });
   } else {
     my $multi_items = $_[0]->multi_items_models->get;
@@ -556,7 +564,7 @@ sub action_warehouse_changed {
     die unless ref($self->warehouse) eq 'SL::DB::Warehouse';
 
     if ( $self->warehouse->id and @{$self->warehouse->bins} ) {
-      $self->bin($self->warehouse->bins->[0]);
+      $self->bin($self->warehouse->bins_sorted->[0]);
       $self->js
         ->html('#bin', $self->build_bin_select)
         ->focus('#part_bin_id');
@@ -701,7 +709,7 @@ sub add {
 
 sub _set_javascript {
   my ($self) = @_;
-  $::request->layout->use_javascript("${_}.js")  for qw(kivi.Part kivi.File kivi.PriceRule ckeditor/ckeditor ckeditor/adapters/jquery kivi.ShopPart);
+  $::request->layout->use_javascript("${_}.js")  for qw(kivi.Part kivi.File kivi.PriceRule ckeditor/ckeditor ckeditor/adapters/jquery kivi.ShopPart kivi.Validator);
   $::request->layout->add_javascripts_inline("\$(function(){kivi.PriceRule.load_price_rules_for_part(@{[ $self->part->id ]})});") if $self->part->id;
 }
 
@@ -730,7 +738,9 @@ sub recalc_item_totals {
     }
   } elsif ( $part->is_assembly ) {
     $part->assemblies( @{$self->assembly_items} );
-    if ( $params{price_type} eq 'lastcost' ) {
+    if ( $params{price_type} eq 'weight' ) {
+      return $part->items_weight_sum;
+    } elsif ( $params{price_type} eq 'lastcost' ) {
       return $part->items_lastcost_sum;
     } else {
       return $part->items_sellprice_sum;
@@ -889,7 +899,7 @@ sub parse_form_customerprices {
 }
 
 sub build_bin_select {
-  select_tag('part.bin_id', [ $_[0]->warehouse->bins ],
+  select_tag('part.bin_id', [ @{ $_[0]->warehouse->bins_sorted } ],
     title_key => 'description',
     default   => $_[0]->bin->id,
   );
@@ -1090,7 +1100,7 @@ sub init_all_price_factors {
 }
 
 sub init_all_pricegroups {
-  SL::DB::Manager::Pricegroup->get_all_sorted;
+  SL::DB::Manager::Pricegroup->get_all_sorted(query => [ obsolete => 0 ]);
 }
 
 # model used to filter/display the parts in the multi-items dialog
@@ -1325,6 +1335,7 @@ sub _setup_form_action_bar {
           t8('Save'),
           call      => [ 'kivi.Part.save' ],
           disabled  => !$may_edit ? t8('You do not have the permissions to access this function.') : undef,
+          checks    => ['kivi.validate_form'],
         ],
         action => [
           t8('Use as new'),
@@ -1334,6 +1345,12 @@ sub _setup_form_action_bar {
                     :                    undef,
         ],
       ], # end of combobox "Save"
+
+      action => [
+        t8('Abort'),
+        submit   => [ '#ic', { action => "Part/abort" } ],
+        only_if  => !!$::form->{show_abort},
+      ],
 
       action => [
         t8('Delete'),

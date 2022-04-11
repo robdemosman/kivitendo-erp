@@ -394,7 +394,7 @@ sub make_row_result {
        $row->{outcorrection}->{data} - $row->{incorrection}->{data};
   $row->{averconsumed}->{data} = $row->{consumed}->{data}*30/$days ;
   map { $row->{$_}->{data} = $form->format_amount($myconfig,$row->{$_}->{data},2); } $self->getnumcolumns();
-  $row->{partnumber}->{link} = 'controller.pl?action=Part/edit&part.id' . $partid;
+  $row->{partnumber}->{link} = 'controller.pl?action=Part/edit&part.id=' . $partid;
 }
 
 sub action_stock {
@@ -704,7 +704,7 @@ sub init_stocktaking_cutoff_date {
   my $now    = DateTime->now_local;
   my $cutoff = DateTime->new(year => $now->year, month => 12, day => 31);
   if ($now->month < 1) {
-    $cutoff->substract(years => 1);
+    $cutoff->subtract(years => 1);
   }
   return $cutoff;
 }
@@ -820,7 +820,7 @@ select unnest(ids)
 SQL
 
   my $objs  = SL::DB::Manager::Inventory->get_all(
-    query        => [ id => [ \"$query" ] ],
+    query        => [ id => [ \"$query" ] ],                           # " make emacs happy
     with_objects => [ 'parts', 'trans_type', 'bin', 'bin.warehouse' ], # prevent lazy loading in template
     sort_by      => 'itime DESC',
   );
@@ -953,7 +953,7 @@ sub _already_counted {
 
   my %bestbefore_filter;
   if ($::instance_conf->get_show_bestbefore) {
-    %bestbefore_filter = (bestbefore => $params{bestbefore});
+    %bestbefore_filter = (bestbefore => ($params{bestbefore} || undef));
   }
 
   SL::DB::Manager::Stocktaking->get_all(query => [and => [parts_id     => $part->id,

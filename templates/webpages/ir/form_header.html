@@ -14,7 +14,7 @@
 <p>[% saved_message %]</p>
 
 [%- FOREACH key = HIDDENS %]
-<input type="hidden" name="[% HTML.escape(key) %]" value="[% HTML.escape($key)  %]">
+  [% L.hidden_tag(key, $key) %]
 [%- END %]
 <input type="hidden" name="follow_up_trans_id_1" value="[% id %]">
 <input type="hidden" name="follow_up_trans_type_1" value="purchase_invoice">
@@ -33,7 +33,7 @@
 [%- END %]
 [%- IF id %]
   [%- IF INSTANCE_CONF.get_doc_storage %]
-  <li><a href="controller.pl?action=File/list&file_type=document&object_type=purchase_invoice&object_id=[% HTML.url(id) %]">[% 'Documents' | $T8 %]</a></li>
+  <li><a href="#ui-tabs-docs">[% 'Documents' | $T8 %]</a></li>
   <li><a href="controller.pl?action=File/list&file_type=attachment&object_type=purchase_invoice&object_id=[% HTML.url(id) %]">[% 'Attachments' | $T8 %]</a></li>
   [%- END %]
   [%- IF AUTH.assert('record_links', 1) %]
@@ -42,6 +42,10 @@
   <li><a href="[% 'controller.pl?action=AccTrans/list_transactions&trans_id=' _ HTML.url(id) | html %]">[% LxERP.t8('Transactions') %]</a></li>
 [%- END %]
  </ul>
+
+[%- IF INSTANCE_CONF.get_doc_storage %]
+  <div id="ui-tabs-docs"></div>
+[%- END %]
 
  <div id="ui-tabs-basic-data">
 <table width="100%">
@@ -124,13 +128,17 @@
           <th align="right">[% 'Exchangerate' | $T8 %]</th>
           <td>
            [%- IF forex %]
-            [% LxERP.format_amount(exchangerate, 2) %]
+            [% LxERP.format_amount(exchangerate, 5) %]
            [%- ELSE %]
             <input name="exchangerate" size="10" value="[% HTML.escape(LxERP.format_amount(exchangerate)) %]">
            [%- END %]
           </td>
         </tr>
 [%- END %]
+        <tr>
+          <th align="right">[% 'Transaction description' | $T8 %]</th>
+          <td colspan="3">[% L.input_tag("transaction_description", transaction_description, size=35, "data-validate"=INSTANCE_CONF.get_require_transaction_description_ps ? 'required' : '') %]</td>
+        </tr>
       </table>
     </td>
     <td align="right" valign="top">
@@ -155,6 +163,14 @@
           </td>
         </tr>
         <tr>
+          <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+          <td nowrap>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
+        </tr>
+        <tr>
+          <th align="right">[% 'Delivery Date' | $T8 %]</th>
+          <td>[% L.date_tag('deliverydate', deliverydate) %]</td>
+        </tr>
+        <tr>
           <th align="right" nowrap>[% 'Order Number' | $T8 %]</th>
           <td colspan="3"><input size='11' name="ordnumber" value="[% HTML.escape(ordnumber) %]"></td>
         </tr>
@@ -168,7 +184,7 @@
         </tr>
         <tr>
           <th align="right" nowrap>[% 'Project Number' | $T8 %]</th>
-          <td>[%- L.select_tag('globalproject_id', ALL_PROJECTS, title_key = 'projectnumber', default = globalproject_id, with_empty = '1', onChange = "document.getElementById('update_button').click();") %]</td>
+          <td>[% P.project.picker('globalproject_id', globalproject_id, onchange="document.getElementById('update_button').click();") %]</td>
         </tr>
       </table>
     </td>
@@ -188,8 +204,8 @@
      $('document').ready(function(){
 [% IF creditwarning != '' %]
        alert('[% 'Credit Limit exceeded!!!' | $T8 %]');
-[% ELSE %]
 [% END %]
+       kivi.File.doc_tab_init('ir_tabs', 'ui-tabs-docs', $('#id').val(), 'purchase_invoice');
      });
    //-->
   </script>

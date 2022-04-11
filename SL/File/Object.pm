@@ -124,6 +124,10 @@ sub loaded_db_file {  # so, dass wir die nur einmal laden.
   $_[0]->db_file;
 }
 
+sub clone {
+  bless +{ %{ $_[0] } }, __PACKAGE__;
+}
+
 
 sub init_db_file { die 'must always have a db file'; }
 sub init_loaded  { 0 }
@@ -147,7 +151,7 @@ SL::File::Object - a filemangement object wrapper
 
   my ($object) = SL::File->get_all(object_id   => $object_id,
                                    object_type => $object_type,
-                                   file_type   => 'images',  # may be optional
+                                   file_type   => 'image',   # may be optional
                                    source      => 'uploaded' # may be optional
                                   );
 # read attributes

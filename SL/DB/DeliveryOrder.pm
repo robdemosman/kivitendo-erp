@@ -14,7 +14,16 @@ use SL::DB::Helper::FlattenToForm;
 use SL::DB::Helper::LinkedRecords;
 use SL::DB::Helper::TransNumberGenerator;
 
+use SL::DB::Part;
+use SL::DB::Unit;
+
+use SL::DB::DeliveryOrder::TypeData qw(:types);
+
+use SL::Helper::Number qw(_format_total _round_total);
+
 use List::Util qw(first);
+use List::MoreUtils qw(any pairwise);
+use Math::Round qw(nhimult);
 
 __PACKAGE__->meta->add_relationship(orderitems => { type         => 'one to many',
                                                     class        => 'SL::DB::DeliveryOrderItem',
@@ -70,7 +79,11 @@ sub sales_order {
 }
 
 sub type {
-  return shift->customer_id ? 'sales_delivery_order' : 'purchase_delivery_order';
+  goto &order_type;
+}
+
+sub is_type {
+  return shift->type eq shift;
 }
 
 sub displayable_type {
@@ -98,6 +111,10 @@ sub date {
   goto &transdate;
 }
 
+sub number {
+  goto &donumber;
+}
+
 sub _clone_orderitem_cvar {
   my ($cvar) = @_;
 
@@ -120,11 +137,11 @@ sub new_from {
   }
 
   my %args = ( map({ ( $_ => $source->$_ ) } qw(cp_id currency_id customer_id cusordnumber delivery_term_id department_id employee_id globalproject_id intnotes language_id notes
-                                                ordnumber payment_id reqdate salesman_id shippingpoint shipvia taxincluded taxzone_id transaction_description vendor_id
+                                                ordnumber payment_id reqdate salesman_id shippingpoint shipvia taxincluded taxzone_id transaction_description vendor_id billing_address_id
                                              )),
                closed    => 0,
-               is_sales  => !!$source->customer_id,
                delivered => 0,
+               order_type => $params{type},
                transdate => DateTime->today_local,
             );
 
@@ -139,12 +156,19 @@ sub new_from {
     $args{shipto_id} = $source->shipto_id;
   }
 
+  # infer type from legacy fields if not given
+  $args{order_type} //= $source->customer_id ? 'sales_delivery_order'
+                      : $source->vendor_id   ? 'purchase_delivery_order'
+                      : $source->is_sales    ? 'sales_delivery_order'
+                      : croak "need some way to set delivery order type from source";
+
   my $delivery_order = $class->new(%args);
   $delivery_order->assign_attributes(%{ $params{attributes} }) if $params{attributes};
   my $items          = delete($params{items}) || $source->items_sorted;
   my %item_parents;
 
-  my @items = map {
+  # do not copy items when converting to supplier delivery order
+  my @items = $delivery_order->is_type(SUPPLIER_DELIVERY_ORDER_TYPE) ? () : map {
     my $source_item      = $_;
     my $source_item_id   = $_->$item_parent_id_column;
     my @custom_variables = map { _clone_orderitem_cvar($_) } @{ $source_item->custom_variables };
@@ -172,8 +196,141 @@ sub new_from {
   return $delivery_order;
 }
 
+sub new_from_time_recordings {
+  my ($class, $sources, %params) = @_;
+
+  croak("Unsupported object type in sources")                                      if any { ref($_) ne 'SL::DB::TimeRecording' }            @$sources;
+  croak("Cannot create delivery order from source records of different customers") if any { $_->customer_id != $sources->[0]->customer_id } @$sources;
+
+  # - one item per part (article)
+  # - qty is sum of duration
+  # - description goes to item longdescription
+  #  - ordered and summed by date
+  #  - each description goes to an ordered list
+  #  - (as time recording descriptions are formatted text by now, use stripped text)
+  #  - merge same descriptions
+  #
+
+  my $default_part_id  = $params{default_part_id}     ? $params{default_part_id}
+                       : $params{default_partnumber}  ? SL::DB::Manager::Part->find_by(partnumber => $params{default_partnumber})->id
+                       : undef;
+  my $override_part_id = $params{override_part_id}    ? $params{override_part_id}
+                       : $params{override_partnumber} ? SL::DB::Manager::Part->find_by(partnumber => $params{override_partnumber})->id
+                       : undef;
+
+  # check parts and collect entries
+  my %part_by_part_id;
+  my $entries;
+  foreach my $source (@$sources) {
+    next if !$source->duration;
+
+    my $part_id   = $override_part_id;
+    $part_id    ||= $source->part_id;
+    $part_id    ||= $default_part_id;
+
+    die 'article not found for entry "' . $source->displayable_times . '"' if !$part_id;
+
+    if (!$part_by_part_id{$part_id}) {
+      $part_by_part_id{$part_id} = SL::DB::Part->new(id => $part_id)->load;
+      die 'article unit must be time based for entry "' . $source->displayable_times . '"' if !$part_by_part_id{$part_id}->unit_obj->is_time_based;
+    }
+
+    my $date = $source->date->to_kivitendo;
+    $entries->{$part_id}->{$date}->{duration} += $params{rounding}
+                                               ? nhimult(0.25, ($source->duration_in_hours))
+                                               : _round_total($source->duration_in_hours);
+    # add content if not already in description
+    my $new_description = '' . $source->description_as_stripped_html;
+    $entries->{$part_id}->{$date}->{content} ||= '';
+    $entries->{$part_id}->{$date}->{content}  .= '<li>' . $new_description . '</li>'
+      unless $entries->{$part_id}->{$date}->{content} =~ m/\Q$new_description/;
+
+    $entries->{$part_id}->{$date}->{date_obj}  = $source->start_time || $source->date; # for sorting
+  }
+
+  my @items;
+
+  my $h_unit = SL::DB::Manager::Unit->find_h_unit;
+
+  my @keys = sort { $part_by_part_id{$a}->partnumber cmp $part_by_part_id{$b}->partnumber } keys %$entries;
+  foreach my $key (@keys) {
+    my $qty = 0;
+    my $longdescription = '';
+
+    my @dates = sort { $entries->{$key}->{$a}->{date_obj} <=> $entries->{$key}->{$b}->{date_obj} } keys %{$entries->{$key}};
+    foreach my $date (@dates) {
+      my $entry = $entries->{$key}->{$date};
+
+      $qty             += $entry->{duration};
+      $longdescription .= $date . ' <strong>' . _format_total($entry->{duration}) . ' h</strong>';
+      $longdescription .= '<ul>';
+      $longdescription .= $entry->{content};
+      $longdescription .= '</ul>';
+    }
+
+    my $item = SL::DB::DeliveryOrderItem->new(
+      parts_id        => $part_by_part_id{$key}->id,
+      description     => $part_by_part_id{$key}->description,
+      qty             => $qty,
+      base_qty        => $h_unit->convert_to($qty, $part_by_part_id{$key}->unit_obj),
+      unit_obj        => $h_unit,
+      sellprice       => $part_by_part_id{$key}->sellprice, # Todo: use price rules to get sellprice
+      longdescription => $longdescription,
+    );
+
+    push @items, $item;
+  }
+
+  my $delivery_order;
+
+  if ($params{related_order}) {
+    # collect suitable items in related order
+    my @items_to_use;
+    my @new_attributes;
+    foreach my $item (@items) {
+      my $item_to_use = first {$item->parts_id == $_->parts_id} @{ $params{related_order}->items_sorted };
+
+      die "no suitable item found in related order" if !$item_to_use;
+
+      my %new_attributes;
+      $new_attributes{$_} = $item->$_ for qw(qty base_qty unit_obj longdescription);
+      push @items_to_use,   $item_to_use;
+      push @new_attributes, \%new_attributes;
+    }
+
+    $delivery_order = $class->new_from($params{related_order}, items => \@items_to_use, %params);
+    pairwise { $a->assign_attributes( %$b) } @{$delivery_order->items}, @new_attributes;
+
+  } else {
+    my %args = (
+      is_sales    => 1,
+      order_type  => 'sales_delivery_order',
+      delivered   => 0,
+      customer_id => $sources->[0]->customer_id,
+      taxzone_id  => $sources->[0]->customer->taxzone_id,
+      currency_id => $sources->[0]->customer->currency_id,
+      employee_id => SL::DB::Manager::Employee->current->id,
+      salesman_id => SL::DB::Manager::Employee->current->id,
+      items       => \@items,
+    );
+    $delivery_order = $class->new(%args);
+    $delivery_order->assign_attributes(%{ $params{attributes} }) if $params{attributes};
+  }
+
+  return $delivery_order;
+}
+
+# legacy for compatibility
+# use type_data cusomtervendor and transfer direction instead
+sub is_sales {
+  if ($_[0]->order_type) {
+   return SL::DB::DeliveryOrder::TypeData::get3($_[0]->order_type, "properties", "is_customer");
+  }
+  return $_[0]{is_sales};
+}
+
 sub customervendor {
-  $_[0]->is_sales ? $_[0]->customer : $_[0]->vendor;
+  SL::DB::DeliveryOrder::TypeData::get3($_[0]->order_type, "properties", "is_customer") ? $_[0]->customer : $_[0]->vendor;
 }
 
 sub convert_to_invoice {
@@ -298,6 +455,62 @@ falsish value will be skipped.
 An optional hash reference. If it exists then it is passed to C<new>
 allowing the caller to set certain attributes for the new delivery
 order.
+
+=back
+
+=item C<new_from_time_recordings $sources, %params>
+
+Creates a new C<SL::DB::DeliveryOrder> instance from the time recordings
+given as C<$sources>. All time recording entries must belong to the same
+customer. Time recordings are sorted by article and date. For each article
+a new delivery order item is created. If no article is associated with an
+entry, a default article will be used. The article given in the time
+recording entry can be overriden.
+Entries of the same date (for each article) are summed together and form a
+list entry in the long description of the item.
+
+The created delivery order object will be returnd but not saved.
+
+C<$sources> must be an array reference of C<SL::DB::TimeRecording> instances.
+
+C<%params> can include the following options:
+
+=over 2
+
+=item C<attributes>
+
+An optional hash reference. If it exists then it is used to set
+attributes of the newly created delivery order object.
+
+=item C<default_part_id>
+
+An optional part id which is used as default value if no part is set
+in the time recording entry.
+
+=item C<default_partnumber>
+
+Like C<default_part_id> but given as partnumber, not as id.
+
+=item C<override_part_id>
+
+An optional part id which is used instead of a value set in the time
+recording entry.
+
+=item C<override_partnumber>
+
+Like C<overrride_part_id> but given as partnumber, not as id.
+
+=item C<related_order>
+
+An optional C<SL::DB::Order> object. If it exists then it is used to
+generate the delivery order from that via C<new_from>.
+The generated items are created from a suitable item of the related
+order. If no suitable item is found, an exception is thrown.
+
+=item C<rounding>
+
+An optional boolean value. If truish, then the durations of the time entries
+are rounded up to the full quarters of an hour.
 
 =back
 

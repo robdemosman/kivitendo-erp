@@ -94,6 +94,17 @@ sub run {
   $::myconfig{numberformat} = $old_numberformat;
 }
 
+sub init_manager_class {
+  my ($self) = @_;
+
+  my @manager_classes;
+  foreach my $class (@{ $self->class }) {
+    $class =~ m/^SL::DB::(.+)/;
+    push @manager_classes, "SL::DB::Manager::" . $1;
+  }
+  $self->manager_class(\@manager_classes);
+}
+
 sub add_columns {
   my ($self, $row_ident, @columns) = @_;
 
@@ -159,9 +170,11 @@ sub handle_cvars {
   my ($self, $entry, %params) = @_;
 
   return if @{ $entry->{errors} };
+  return unless $entry->{object}->can('cvars_by_config');
 
   my %type_to_column = ( text      => 'text_value',
                          textfield => 'text_value',
+                         htmlfield => 'text_value',
                          select    => 'text_value',
                          date      => 'timestamp_value_as_date',
                          timestamp => 'timestamp_value_as_date',
@@ -172,7 +185,7 @@ sub handle_cvars {
 
   # autovivify all cvars (cvars_by_config will do that for us)
   my @cvars;
-  @cvars = @{ $entry->{object}->cvars_by_config } if $entry->{object}->can('cvars_by_config');
+  @cvars = @{ $entry->{object}->cvars_by_config };
 
   foreach my $config (@{ $self->cvar_configs_by->{row_ident}->{$entry->{raw_data}->{datatype}} }) {
     next unless exists $entry->{raw_data}->{ "cvar_" . $config->name };

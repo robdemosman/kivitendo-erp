@@ -177,6 +177,7 @@ sub generate_report {
     'insertdate'         => { 'text' => $locale->text('Insert Date'), },
     'invnumber'          => { 'text' => $locale->text('Invoice Number'), },
     'lastcost'           => { 'text' => $locale->text('Last Cost'), },
+    'assembly_lastcost'  => { 'text' => $locale->text('Assembly Last Cost'), },
     'linetotallastcost'  => { 'text' => $locale->text('Extended'), },
     'linetotallistprice' => { 'text' => $locale->text('Extended'), },
     'linetotalsellprice' => { 'text' => $locale->text('Extended'), },
@@ -184,10 +185,11 @@ sub generate_report {
     'microfiche'         => { 'text' => $locale->text('Microfiche'), },
     'name'               => { 'text' => $locale->text('Name'), },
     'onhand'             => { 'text' => $locale->text('Stocked Qty'), },
+    'assembly_qty'       => { 'text' => $locale->text('Assembly Item Qty'), },
     'ordnumber'          => { 'text' => $locale->text('Order Number'), },
     'partnumber'         => { 'text' => $locale->text('Part Number'), },
     'partsgroup'         => { 'text' => $locale->text('Partsgroup'), },
-    'priceupdate'        => { 'text' => $locale->text('Updated'), },
+    'priceupdate'        => { 'text' => $locale->text('Price updated'), },
     'quonumber'          => { 'text' => $locale->text('Quotation'), },
     'rop'                => { 'text' => $locale->text('ROP'), },
     'sellprice'          => { 'text' => $locale->text('Sell Price'), },
@@ -267,6 +269,7 @@ sub generate_report {
     obsolete      => $locale->text('Obsolete'),
     orphaned      => $locale->text('Orphaned'),
     onhand        => $locale->text('On Hand'),
+    assembly_qty  => $locale->text('Assembly Item Qty'),
     short         => $locale->text('Short'),
     onorder       => $locale->text('On Order'),
     ordered       => $locale->text('Ordered'),
@@ -291,11 +294,15 @@ sub generate_report {
     ean           => $locale->text('EAN')              . ": '$form->{ean}'",
     insertdatefrom => $locale->text('Insert Date') . ": " . $locale->text('From')       . " " . $locale->date(\%myconfig, $form->{insertdatefrom}, 1),
     insertdateto   => $locale->text('Insert Date') . ": " . $locale->text('To (time)')  . " " . $locale->date(\%myconfig, $form->{insertdateto}, 1),
+    l_service     => $locale->text('Services'),
+    l_assembly    => $locale->text('Assemblies'),
+    l_part        => $locale->text('Parts'),
   );
 
   my @itemstatus_keys = qw(active obsolete orphaned onhand short);
   my @callback_keys   = qw(onorder ordered rfq quoted bought sold partnumber partsgroup partsgroup_id serialnumber description make model
-                           drawing microfiche l_soldtotal l_deliverydate transdatefrom transdateto insertdatefrom insertdateto ean shop all);
+                           drawing microfiche l_soldtotal l_deliverydate transdatefrom transdateto insertdatefrom insertdateto ean shop all
+                           l_service l_assembly l_part);
 
   # calculate dependencies
   for (@itemstatus_keys, @callback_keys) {
@@ -317,6 +324,7 @@ sub generate_report {
     $column_defs{sellprice}{text} = $locale->text('Price');
     $form->{l_lastcost} = ""
   }
+  $form->{l_assembly_lastcost} = "Y" if $form->{l_assembly} && $form->{l_lastcost};
 
   if ($form->{description}) {
     $description = $form->{description};
@@ -383,8 +391,8 @@ sub generate_report {
 
   my @columns = qw(
     partnumber type_and_classific description notes partsgroup warehouse bin
-    make model onhand rop soldtotal unit listprice
-    linetotallistprice sellprice linetotalsellprice lastcost linetotallastcost
+    make model assembly_qty onhand rop soldtotal unit listprice
+    linetotallistprice sellprice linetotalsellprice lastcost assembly_lastcost linetotallastcost
     priceupdate weight image drawing microfiche invnumber ordnumber quonumber
     transdate name serialnumber deliverydate ean projectnumber projectdescription
     insertdate shop
@@ -412,7 +420,7 @@ sub generate_report {
 
   %column_defs = (%column_defs, %column_defs_cvars, %column_defs_pricegroups);
   map { $column_defs{$_}->{visible} ||= $form->{"l_$_"} ? 1 : 0 } @columns;
-  map { $column_defs{$_}->{align}   = 'right' } qw(onhand sellprice listprice lastcost linetotalsellprice linetotallastcost linetotallistprice rop weight soldtotal shop), @pricegroup_columns;
+  map { $column_defs{$_}->{align}   = 'right' } qw(assembly_qty onhand sellprice listprice lastcost assembly_lastcost linetotalsellprice linetotallastcost linetotallistprice rop weight soldtotal shop), @pricegroup_columns;
 
   my @hidden_variables = (
     qw(l_subtotal l_linetotal searchitems itemstatus bom l_pricegroups insertdatefrom insertdateto),
@@ -429,7 +437,7 @@ sub generate_report {
   my $callback         = build_std_url('action=generate_report', grep { $form->{$_} } @hidden_variables);
 
   my @sort_full        = qw(partnumber description onhand soldtotal deliverydate insertdate shop);
-  my @sort_no_revers   = qw(partsgroup priceupdate invnumber ordnumber quonumber name image drawing serialnumber);
+  my @sort_no_revers   = qw(partsgroup invnumber ordnumber quonumber name image drawing serialnumber);
 
   foreach my $col (@sort_full) {
     $column_defs{$col}->{link} = join '&', $callback, "sort=$col", map { "$_=" . E($form->{$_}) } qw(revers lastsort);
@@ -497,6 +505,7 @@ sub generate_report {
     $ref->{sellprice}     *= $ref->{exchangerate} / $ref->{price_factor};
     $ref->{listprice}     *= $ref->{exchangerate} / $ref->{price_factor};
     $ref->{lastcost}      *= $ref->{exchangerate} / $ref->{price_factor};
+    $ref->{assembly_lastcost} *= $ref->{exchangerate} / $ref->{price_factor};
 
     # use this for assemblies
     my $soldtotal = $bsooqr_mode ? $ref->{soldtotal} : $ref->{onhand};
@@ -511,7 +520,7 @@ sub generate_report {
     $row->{partnumber}->{link}  = $edit_link;
     $row->{description}->{link} = $edit_link;
 
-    foreach (qw(sellprice listprice lastcost)) {
+    foreach (qw(sellprice listprice lastcost assembly_lastcost)) {
       $row->{$_}{data}            = $form->format_amount(\%myconfig, $ref->{$_}, 2);
       $row->{"linetotal$_"}{data} = $form->format_amount(\%myconfig, $ref->{onhand} * $ref->{$_}, 2);
     }
@@ -574,6 +583,9 @@ sub generate_report {
     $row->{notes}{data} = SL::HTML::Util->strip($ref->{notes});
     $row->{type_and_classific}{data} = SL::Presenter::Part::type_abbreviation($ref->{part_type}).
                                        SL::Presenter::Part::classification_abbreviation($ref->{classification_id});
+
+    # last price update
+    $row->{priceupdate}{data} = SL::DB::Part->new(id => $ref->{id})->load->last_price_update->valid_from->to_kivitendo;
 
     $report->add_data($row);
 

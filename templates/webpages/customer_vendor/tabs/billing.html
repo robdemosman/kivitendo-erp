@@ -9,7 +9,7 @@
 
     <tr height="5"></tr>
 
-    [% IF ( INSTANCE_CONF.get_vertreter ) %]
+    [% IF (0 && INSTANCE_CONF.get_vertreter ) %]
       <tr>
         <th align="right">
           [% IF SELF.is_vendor() %]
@@ -54,8 +54,12 @@
       <th align="right" nowrap>[% 'Greeting' | $T8 %]</th>
 
       <td>
-        [% L.input_tag('cv.greeting', SELF.cv.greeting) %]
-        [% L.select_tag('cv_greeting_select', SELF.all_greetings, default = SELF.cv.greeting, with_empty = 1, onchange = '$("#cv_greeting").val(this.value);') %]
+        [%- IF INSTANCE_CONF.get_vc_greetings_use_textfield -%]
+          [% L.input_tag('cv.greeting', SELF.cv.greeting) %]
+          [% L.select_tag('cv_greeting_select', SELF.all_greetings, default = SELF.cv.greeting, value_key = 'description', title_key = 'description', with_empty = 1, onchange = '$("#cv_greeting").val(this.value);') %]
+        [%- ELSE -%]
+          [% L.select_tag('cv.greeting', SELF.all_greetings, default = SELF.cv.greeting, value_key = 'description', title_key = 'description', with_empty = 1) %]
+        [%- END -%]
       </td>
     </tr>
 
@@ -70,6 +74,8 @@
 
       <td>
         [% L.input_tag('cv.name', SELF.cv.name) %]
+        <label for="cv_natural_person">[% 'natural person' | $T8 %]</label>
+        [% L.checkbox_tag('cv.natural_person', checked = SELF.cv.natural_person, for_submit=1) %]
       </td>
     </tr>
 
@@ -172,7 +178,8 @@
     [% IF ( SELF.is_customer() ) %]
     <tr>
       <th align="right">[% 'Email of the invoice recipient' | $T8 %]</th>
-      <td>[% L.input_tag('cv.invoice_mail', SELF.cv.invoice_mail, size = 45) %]</td>
+      <td>[% L.input_tag('cv.invoice_mail', SELF.cv.invoice_mail, size = 30) %] <label for="cv_postal_invoice">[% 'Postal Invoice' | $T8 %]</label>
+        [% L.checkbox_tag('cv.postal_invoice', checked = SELF.cv.postal_invoice, for_submit=1) %]</td>
     </tr>
     <tr>
       <th align="right">[% 'Email of the delivery order recipient' | $T8 %]</th>
@@ -236,6 +243,13 @@
     </tr>
 
     <tr>
+      [% IF ( SELF.all_currencies.size ) %]
+        <th align="right">[% 'Currency' | $T8 %]</th>
+        <td>
+          [% L.select_tag('cv.currency_id', SELF.all_currencies, title_key = 'name', value_key = 'id', default = SELF.cv.currency_id) %]
+        </td>
+      [% END %]
+
       <th align="right">[% 'Tax Number / SSN' | $T8 %]</th>
 
       <td>
@@ -249,19 +263,6 @@
       <td>
         [% L.input_tag('cv.ustid', SELF.cv.ustid, size = 20 ) %]
       </td>
-
-
-      [%- IF ( SELF.is_vendor() ) %]
-        <th align="right">[% 'Customer Number' | $T8 %]</th>
-        <td>
-          [% L.input_tag('cv.v_customer_id', SELF.cv.v_customer_id, size = 10) %]
-        </td>
-      [%- ELSE %]
-        <th align="right">[% 'our vendor number at customer' | $T8 %]</th>
-        <td>
-          [% L.input_tag('cv.c_vendor_id', SELF.cv.c_vendor_id, size = 10) %]
-        </td>
-      [%- END %]
     </tr>
 
     <tr>
@@ -270,13 +271,23 @@
         <td>
           [% L.input_tag('cv.commercial_court', SELF.cv.commercial_court, size = 20) %]
         </td>
-      [% END %]
-      [% IF ( SELF.all_currencies.size ) %]
-        <th align="right">[% 'Currency' | $T8 %]</th>
+
+        <th align="right">[% 'our vendor number at customer' | $T8 %]</th>
         <td>
-          [% L.select_tag('cv.currency_id', SELF.all_currencies, title_key = 'name', value_key = 'id', default = SELF.cv.currency_id) %]
+          [% L.input_tag('cv.c_vendor_id', SELF.cv.c_vendor_id, size = 20) %]
         </td>
-      [% END %]
+
+        <th align="right">[% 'Our routing id at customer' | $T8 %]</th>
+        <td>
+          [% L.input_tag('cv.c_vendor_routing_id', SELF.cv.c_vendor_routing_id, size = 20) %]
+        </td>
+
+      [%- ELSE %]
+        <th align="right">[% 'Customer Number' | $T8 %]</th>
+        <td>
+          [% L.input_tag('cv.v_customer_id', SELF.cv.v_customer_id, size = 20) %]
+        </td>
+      [%- END %]
     </tr>
     <tr>
       [% IF ( !INSTANCE_CONF.get_vertreter ) %]
@@ -370,6 +381,8 @@
       <td>
         [% L.checkbox_tag('cv.order_lock', checked = SELF.cv.order_lock, for_submit=1) %]
       </td>
+      <th align="right">[% LxERP.t8("Create sales invoices with Factur-X/ZUGFeRD data") %]</th>
+      <td>[% L.select_tag("cv.create_zugferd_invoices", SELF.zugferd_settings, default=SELF.cv.create_zugferd_invoices) %]</td>
      </tr>
     [% END %]
   </table>

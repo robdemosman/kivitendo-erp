@@ -34,7 +34,10 @@ my %supported_types = (
       { method => 'iban',                                      title => t8('IBAN'), },
       { method => 'bank',                                      title => t8('Bank'), },
       { method => 'bank_code',                                 title => t8('Bank code'), },
+      { method => 'bank_account_id',                           title => t8('Bank Account Id Number (Swiss)'), },
       { method => 'bic',                                       title => t8('BIC'), },
+      {                                                        title => t8('Use for Factur-X/ZUGFeRD'), formatter => sub { $_[0]->use_for_zugferd ? t8('yes') : t8('no') } },
+      {                                                        title => t8('Use for Swiss QR-Bill'), formatter => sub { $_[0]->use_for_qrbill ? t8('yes') : t8('no') } },
       { method => 'reconciliation_starting_date_as_date',      title => t8('Date'),    align => 'right' },
       { method => 'reconciliation_starting_balance_as_number', title => t8('Balance'), align => 'right' },
     ],
@@ -55,12 +58,42 @@ my %supported_types = (
     ],
   },
 
+  contact_department => {
+    class  => 'ContactDepartment',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Departments'),
+      add  => t8('Add department'),
+      edit => t8('Edit department'),
+    },
+  },
+
+  contact_title => {
+    class  => 'ContactTitle',
+    auth   => 'config',
+    titles => {
+      list => t8('Contact Titles'),
+      add  => t8('Add title'),
+      edit => t8('Edit title'),
+    },
+  },
+
   department => {
     class  => 'Department',
     titles => {
       list => t8('Departments'),
       add  => t8('Add department'),
       edit => t8('Edit department'),
+    },
+  },
+
+  greeting => {
+    class  => 'Greeting',
+    auth   => 'config',
+    titles => {
+      list => t8('Greetings'),
+      add  => t8('Add greeting'),
+      edit => t8('Edit greeting'),
     },
   },
 
@@ -79,6 +112,7 @@ my %supported_types = (
       {                            title => t8('Number Format'), formatter => sub { $_[0]->output_numberformat || t8('use program settings') } },
       {                            title => t8('Date Format'),   formatter => sub { $_[0]->output_dateformat   || t8('use program settings') } },
       {                            title => t8('Long Dates'),    formatter => sub { $_[0]->output_longdates ? t8('yes') : t8('no') } },
+      {                            title => t8('Obsolete'),      formatter => sub { $_[0]->obsolete  ? t8('yes') : t8('no') } },
     ],
   },
 
@@ -234,6 +268,20 @@ my %supported_types = (
       { method => 'description',                  title => t8('Description') },
       { method => 'section_number_format',        title => t8('Section number format') },
       { method => 'function_block_number_format', title => t8('Function block number format') },
+    ],
+  },
+
+  time_recording_article => {
+    # Make locales.pl happy: $self->render("simple_system_setting/_time_recording_article_form")
+    class  => 'TimeRecordingArticle',
+    auth   => 'config',
+    titles => {
+      list => t8('Time Recording Articles'),
+      add  => t8('Add time recording article'),
+      edit => t8('Edit time recording article'),
+    },
+    list_attributes => [
+      { title => t8('Article'), formatter => sub { $_[0]->part->displayable_name } },
     ],
   },
 

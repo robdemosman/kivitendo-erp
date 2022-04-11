@@ -83,6 +83,17 @@
                       [% L.button_tag("kivi.SalesPurchase.edit_custom_shipto()", LxERP.t8("Custom shipto")) %]
                     </td>
                   </tr>
+
+[%- IF is_sales && vc_obj.additional_billing_addresses.as_list.size %]
+                  <tr>
+                    <th align="right">[% 'Custom Billing Address' | $T8 %]</th>
+                    <td>
+                      [% L.select_tag('billing_address_id', vc_obj.additional_billing_addresses,
+                                      with_empty=1, default=billing_address_id, value_key='id', title_key='displayable_id', style='width: 250px') %]
+                    </td>
+                  </tr>
+[%- END %]
+
 [%- IF is_order %]
                   <tr>
                     <td align="right">[% 'Credit Limit' | $T8 %]</td>
@@ -110,6 +121,14 @@
                       [% L.select_tag('taxzone_id', ( id ? ALL_TAXZONES : ALL_ACTIVE_TAXZONES), default=taxzone_id, title_key='description', style='width: 250px') %]
                     </td>
                   </tr>
+[%- IF ALL_LANGUAGES.size %]
+                  <tr>
+                    <th align="right" nowrap>[% 'Language' | $T8 %]</th>
+                    <td colspan="3">
+                      [% L.select_tag('language_id', ALL_LANGUAGES, default=language_id, title_key = 'description', with_empty=1, style='width:250px') %]
+                    </td>
+                  </tr>
+[%- END %]
 [%- IF ALL_DEPARTMENTS.size %]
                   <tr>
                     <th align="right" nowrap>[% 'Department' | $T8 %]</th>
@@ -127,7 +146,7 @@
                     <th align="right">[% 'Exchangerate' | $T8 %]</th>
                     <td>
                      [%- IF forex %]
-                      [% LxERP.format_amount(exchangerate, 2) %]
+                      [% LxERP.format_amount(exchangerate, 5) %]
                      [%- ELSE %]
                       <input name="exchangerate" size="10" value="[% HTML.escape(LxERP.format_amount(exchangerate)) %]">
                      [%- END %]
@@ -190,12 +209,30 @@
 [%- IF is_order %]
                   <tr>
                     <th width="70%" align="right" nowrap>[% 'Order Number' | $T8 %]</th>
-                    <td><input name="ordnumber" id="ordnumber" size="11" value="[% HTML.escape(ordnumber) %]"></td>
+                    <td>
+[%- IF INSTANCE_CONF.get_sales_purchase_record_numbers_changeable %]
+                      [% L.input_tag("ordnumber", ordnumber, size="11") %]
+[%- ELSIF id %]
+                      [% HTML.escape(ordnumber) %]
+                      [% L.hidden_tag("ordnumber", ordnumber) %]
+[%- ELSE %]
+                      [% LxERP.t8("will be set upon saving") %]
+[%- END %]
+                    </td>
                   </tr>
 [%- END %]
                   <tr>
                     <th width="70%" align="right" nowrap>[% IF is_req_quo %][% 'RFQ Number' | $T8 %][% ELSE %][% 'Quotation Number' | $T8 %][% END %]</th>
-                    <td><input name="quonumber" id="quonumber" size="11" value="[% HTML.escape(quonumber) %]"></td>
+                    <td>
+[%- IF is_order || INSTANCE_CONF.get_sales_purchase_record_numbers_changeable %]
+                      [% L.input_tag("quonumber", quonumber, size="11") %]
+[%- ELSIF id %]
+                      [% HTML.escape(quonumber) %]
+                      [% L.hidden_tag("quonumber", quonumber) %]
+[%- ELSE %]
+                      [% LxERP.t8("will be set upon saving") %]
+[%- END %]
+                    </td>
                   </tr>
 [%- IF is_order %]
                   <tr>
@@ -216,6 +253,10 @@
                     <td nowrap>
                       [% L.date_tag('transdate', transdate, id='transdate') %]
                     </td>
+                  </tr>
+                  <tr>
+                    <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+                    <td nowrap>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
                   </tr>
                   <tr>
                     <th align="right" nowrap>

@@ -4,7 +4,6 @@ use strict;
 
 use parent qw(Rose::Object);
 
-use Clone qw(clone);
 use SL::File::Backend;
 use SL::File::Object;
 use SL::DB::History;
@@ -22,11 +21,11 @@ use constant RENAME_NEW_VERSION => 4;
 
 sub get {
   my ($self, %params) = @_;
-  die 'no id' unless $params{id};
-  my $dbfile = SL::DB::Manager::File->get_first(query => [id => $params{id}]);
-  die 'not found' unless $dbfile;
-  $main::lxdebug->message(LXDebug->DEBUG2(), "object_id=".$dbfile->object_id." object_type=".$dbfile->object_type." dbfile=".$dbfile);
-  SL::File::Object->new(db_file => $dbfile, id => $dbfile->id, loaded => 1);
+  die "no id or dbfile" unless $params{id} || $params{dbfile};
+  $params{dbfile} = SL::DB::Manager::File->get_first(query => [id => $params{id}]) if !$params{dbfile};
+  die 'not found' unless $params{dbfile};
+  $main::lxdebug->message(LXDebug->DEBUG2(), "object_id=".$params{dbfile}->object_id." object_type=".$params{dbfile}->object_type." dbfile=".$params{dbfile});
+  SL::File::Object->new(db_file => $params{dbfile}, id => $params{dbfile}->id, loaded => 1);
 }
 
 sub get_version_count {
@@ -49,10 +48,11 @@ sub get_all {
     object_id   => $params{object_id},
     object_type => $params{object_type}
   );
-  push @query, (file_name => $params{file_name}) if $params{file_name};
-  push @query, (file_type => $params{file_type}) if $params{file_type};
-  push @query, (mime_type => $params{mime_type}) if $params{mime_type};
-  push @query, (source    => $params{source})    if $params{source};
+  push @query, (file_name     => $params{file_name})     if $params{file_name};
+  push @query, (file_type     => $params{file_type})     if $params{file_type};
+  push @query, (mime_type     => $params{mime_type})     if $params{mime_type};
+  push @query, (source        => $params{source})        if $params{source};
+  push @query, (print_variant => $params{print_variant}) if $params{print_variant};
 
   my $sortby = $params{sort_by} || 'itime DESC,file_name ASC';
 
@@ -63,9 +63,9 @@ sub get_all {
 sub get_all_versions {
   my ($self, %params) = @_;
   my @versionobjs;
-  my @fileobjs = $self->get_all(%params);
+  my @fileobjs;
   if ( $params{dbfile} ) {
-    push @fileobjs, SL::File::Object->new(dbfile => $params{db_file}, id => $params{dbfile}->id, loaded => 1);
+    push @fileobjs, SL::File::Object->new(db_file => $params{dbfile}, id => $params{dbfile}->id, loaded => 1);
   } else {
     @fileobjs = $self->get_all(%params);
   }
@@ -78,13 +78,13 @@ sub get_all_versions {
       for my $version (2..$maxversion) {
         $main::lxdebug->message(LXDebug->DEBUG2(), "clone for version=".($maxversion-$version+1));
         eval {
-          my $clone = clone($fileobj);
+          my $clone = $fileobj->clone;
           $clone->version($maxversion-$version+1);
           $clone->newest(0);
           $main::lxdebug->message(LXDebug->DEBUG2(), "clone version=".$clone->version." mtime=". $clone->mtime);
           push @versionobjs, $clone;
           1;
-        }
+        } or do {$::lxdebug->message(LXDebug::WARN(), "clone for version=".($maxversion-$version+1) . "failed: " . $@)};
       }
     }
   }
@@ -99,10 +99,11 @@ sub get_all_count {
     object_id   => $params{object_id},
     object_type => $params{object_type}
   );
-  push @query, (file_name => $params{file_name}) if $params{file_name};
-  push @query, (file_type => $params{file_type}) if $params{file_type};
-  push @query, (mime_type => $params{mime_type}) if $params{mime_type};
-  push @query, (source    => $params{source})    if $params{source};
+  push @query, (file_name     => $params{file_name})     if $params{file_name};
+  push @query, (file_type     => $params{file_type})     if $params{file_type};
+  push @query, (mime_type     => $params{mime_type})     if $params{mime_type};
+  push @query, (source        => $params{source})        if $params{source};
+  push @query, (print_variant => $params{print_variant}) if $params{print_variant};
 
   my $cnt = SL::DB::Manager::File->get_all_count(query => [@query]);
   return $cnt;
@@ -219,6 +220,7 @@ sub _save {
         mime_type      => $params{mime_type},
         title          => $params{title},
         description    => $params{description},
+        print_variant  => $params{print_variant},
       );
       $file->itime($params{mtime})    if $params{mtime};
       $params{itime} = $params{mtime} if $params{mtime};
@@ -389,7 +391,7 @@ SL::File - The intermediate Layer for handling files
                      object_id     => $self->object_id,
                      object_type   => $self->object_type,
                      mime_type     => 'application/pdf',
-                     file_type     => 'documents',
+                     file_type     => 'document',
                      file_contents => 'this is no pdf');
 
   my $file1  = SL::File->get(id => $id);
@@ -402,7 +404,7 @@ SL::File - The intermediate Layer for handling files
   SL::File->rename(id => $id,to => $newname);
   my $files1 = SL::File->get_all(object_id   => $object_id,
                                  object_type => $object_type,
-                                 file_type   => 'images',  # may be optional
+                                 file_type   => 'image',   # may be optional
                                  source      => 'uploaded' # may be optional
                                 );
 
@@ -419,13 +421,13 @@ There are three types of files:
 
 =over 2
 
-=item - documents,
+=item - document,
 
 which can be generated files (for sales), scanned files or uploaded files (for purchase) for an ERP-object.
 They can exist in different versions. The versioning is handled implicit. All versions of a file may be
 deleted by the user if she/he is allowed to do this.
 
-=item - attachments,
+=item - attachment,
 
 which have additional information for an ERP-objects. They are uploadable. If a filename still exists
 on a ERP-Object the new uploaded file is a new version of this or it must be renamed by user.
@@ -434,7 +436,7 @@ There are generic attachments for a specific document group (like sales_invoices
 combinide/merged with the document-file in the time of printing.
 Today only PDF-Attachmnets can be merged with the generated document-PDF.
 
-=item - images,
+=item - image,
 
 they are like attachments, but they may be have thumbnails for displaying.
 So the must have an image format like png,jpg. The versioning is like attachments
@@ -527,7 +529,7 @@ The Type of the ERP-object like "sales_quotation" for a new file. A clear mappin
 
 =item C<file_type>
 
-The type may be "documents", "attachments" or "images" for a new file.
+The type may be "document", "attachment" or "image" for a new file.
 
 =item C<source>
 
@@ -632,7 +634,7 @@ The Type of the ERP-object like "sales_quotation". A clear mapping to the class/
 
 =item C<file_type>
 
-The type may be "documents", "attachments" or "images". This parameter is optional.
+The type may be "document", "attachment" or "image". This parameter is optional.
 
 =item C<file_name>
 

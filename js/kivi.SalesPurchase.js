@@ -1,4 +1,6 @@
 namespace('kivi.SalesPurchase', function(ns) {
+  this.longdescription_dialog_size_percentage = 0;
+
   this.edit_longdescription = function(row) {
     var $element = $('#longdescription_' + row);
 
@@ -17,8 +19,20 @@ namespace('kivi.SalesPurchase', function(ns) {
   };
 
   this.edit_longdescription_with_params = function(params) {
+    var dialog_width    = 800;
+    var dialog_height   = 500;
+    var textarea_width  = 750;
+    var textarea_height = 220;
+    if (this.longdescription_dialog_size_percentage != 0) {
+      dialog_width    = Math.ceil(window.innerWidth  * this.longdescription_dialog_size_percentage/100);
+      dialog_height   = Math.ceil(window.innerHeight * this.longdescription_dialog_size_percentage/100);
+      textarea_width  = Math.ceil(dialog_width * 95/100);
+      textarea_height = dialog_height - 220;
+      if (textarea_height <= 0) textarea_height = 220;
+    }
+
     var $container = $('#popup_edit_longdescription_input_container');
-    var $edit      = $('<textarea id="popup_edit_longdescription_input" class="texteditor-in-dialog" wrap="soft" style="width: 750px; height: 220px;"></textarea>');
+    var $edit      = $('<textarea id="popup_edit_longdescription_input" class="texteditor-in-dialog texteditor-space-for-toolbar" wrap="soft" style="width: ' + textarea_width + 'px; height: ' + textarea_height + 'px;"></textarea>');
 
     $container.children().remove();
     $container.append($edit);
@@ -44,6 +58,8 @@ namespace('kivi.SalesPurchase', function(ns) {
       id:    'edit_longdescription_dialog',
       dialog: {
         title: kivi.t8('Enter longdescription'),
+        width:  dialog_width,
+        height: dialog_height,
         open:  function() { kivi.focus_ckeditor_when_ready('#popup_edit_longdescription_input'); },
         close: function() { $('#popup_edit_longdescription_input_container').children().remove(); }
       }
@@ -170,8 +186,9 @@ namespace('kivi.SalesPurchase', function(ns) {
     $('#shiptoname').focus();
   };
 
-  this.submit_custom_shipto = function() {
-    $('#shipto_id').val('');
+  this.submit_custom_shipto = function(id_selector) {
+    id_selector = id_selector || '#shipto_id';
+    $(id_selector).val('');
     $('#shipto_dialog').data('confirmed', true);
     $('#shipto_dialog').dialog('close');
   };
@@ -240,8 +257,16 @@ namespace('kivi.SalesPurchase', function(ns) {
     if (!kivi.SalesPurchase.check_required_email_fields())
       return false;
 
+    // ckeditor gets de-initialized when removing the children from
+    // the DOM. Therefore we have to manually preserve its content
+    // over the children's relocation.
+
+    var message = $('#email_form_message').val();
+
     $('#send_email_dialog').children().remove().appendTo('#email_inputs');
     $('#send_email_dialog').dialog('close');
+
+    $('#email_form_message').val(message);
 
     kivi.submit_form_with_action('#form', $('#form').data('send-email-action'));
 
@@ -254,6 +279,8 @@ namespace('kivi.SalesPurchase', function(ns) {
 
     $('#print_options').children().remove().appendTo('#email_form_print_options');
 
+    kivi.reinit_widgets();
+
     var to_focus = $('#email_form_to').val() === '' ? 'to' : 'subject';
     $('#email_form_' + to_focus).focus();
   };
@@ -263,26 +290,32 @@ namespace('kivi.SalesPurchase', function(ns) {
     return true;
   };
 
-  this.show_email_dialog = function(send_action) {
+  this.show_email_dialog = function(send_action, vc, vc_id_selector) {
     $('#form').data('send-email-action', send_action || 'send_sales_purchase_email');
 
-    var vc   = $('#vc').val();
+    vc             = vc             || $('#vc').val();
+    vc_id_selector = vc_id_selector || '#' + vc + '_id';
+    var vc_id = $(vc_id_selector).val();
+
     var data = {
-      action:      'show_sales_purchase_email_dialog',
-      cp_id:       $('#cp_id').val(),
-      donumber:    $('#donumber').val(),
-      format:      $('#format').val(),
-      formname:    $('#formname').val(),
-      id:          $('#id').val(),
-      invnumber:   $('#invnumber').val(),
-      language_id: $('#language_id').val(),
-      media:       'email',
-      ordnumber:   $('#ordnumber').val(),
-      rowcount:    $('#rowcount').val(),
-      quonumber:   $('#quonumber').val(),
-      type:        $('#type').val(),
-      vc:          vc,
-      vc_id:       $('#' + vc + '_id').val(),
+      action:       'show_sales_purchase_email_dialog',
+      cp_id:        $('#cp_id').val(),
+      direct_debit: $('#direct_debit').prop('checked') ? 1 : 0,
+      donumber:     $('#donumber').val(),
+      format:       $('#format').val(),
+      formname:     $('#formname').val(),
+      id:           $('#id').val(),
+      invnumber:    $('#invnumber').val(),
+      language_id:  $('#language_id').val(),
+      media:        'email',
+      ordnumber:    $('#ordnumber').val(),
+      cusordnumber: $('#cusordnumber').val(),
+      rowcount:     $('#rowcount').val(),
+      quonumber:    $('#quonumber').val(),
+      type:         $('#type').val(),
+      vc:           vc,
+      vc_id:        vc_id,
+      project_id:  $('#globalproject_id').val(),
     };
 
     $('[name^=id_],[name^=partnumber_]').each(function(idx, elt) {
@@ -309,7 +342,7 @@ namespace('kivi.SalesPurchase', function(ns) {
   this.activate_send_email_actions_regarding_printout = function() {
     var selected = $('#email_form_attachment_policy').val();
     $('#email_form_attachment_filename').parents('tr')[selected !== 'no_file' ? 'show' : 'hide']();
-    $('#email_form_print_options')[selected === 'normal' ? 'show' : 'hide']();
+    $('#email_form_print_options')[selected !== 'no_file' ? 'show' : 'hide']();
   };
 
   // Printing records.

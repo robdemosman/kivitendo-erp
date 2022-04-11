@@ -337,7 +337,8 @@ namespace("kivi", function(ns) {
       extraPlugins:  'inline_resize',
       toolbar:       buttons,
       disableAutoInline: true,
-      title:         false
+      title:         false,
+      disableNativeSpellChecker: false
     };
 
     config.height = $e.height();
@@ -346,8 +347,29 @@ namespace("kivi", function(ns) {
     var editor = CKEDITOR.inline($e.get(0), config);
     $e.data('ckeditorInstance', editor);
 
+    if ($e.hasClass('texteditor-space-for-toolbar'))
+      editor.on('instanceReady', function() {
+        var editor   = $e.ckeditorGet();
+        var editable = editor.editable();
+        $(editable.$).css("margin-top", "30px");
+      });
+
+
     if ($e.hasClass('texteditor-autofocus'))
       editor.on('instanceReady', function() { ns.focus_ckeditor($e); });
+  };
+
+  ns.filter_select = function() {
+    var $input  = $(this);
+    var $select = $('#' + $input.data('select-id'));
+    var filter  = $input.val().toLocaleLowerCase();
+
+    $select.find('option').each(function() {
+      if ($(this).text().toLocaleLowerCase().indexOf(filter) != -1)
+        $(this).show();
+      else
+        $(this).hide();
+    });
   };
 
   ns.reinit_widgets = function() {
@@ -358,6 +380,7 @@ namespace("kivi", function(ns) {
     if (ns.Part) ns.Part.reinit_widgets();
     if (ns.CustomerVendor) ns.CustomerVendor.reinit_widgets();
     if (ns.Validator) ns.Validator.reinit_widgets();
+    if (ns.Materialize) ns.Materialize.reinit_widgets();
 
     if (ns.ProjectPicker)
       ns.run_once_for('input.project_autocomplete', 'project_picker', function(elt) {
@@ -369,6 +392,9 @@ namespace("kivi", function(ns) {
         kivi.ChartPicker($(elt));
       });
 
+    ns.run_once_for('div.filtered_select input', 'filtered_select', function(elt) {
+      $(elt).bind('change keyup', ns.filter_select);
+    });
 
     var func = kivi.get_function_by_name('local_reinit_widgets');
     if (func)
@@ -451,6 +477,9 @@ namespace("kivi", function(ns) {
   // - dialog: an optional object of options passed to the $.dialog() call
   // - load: an optional function that is called after the content has been loaded successfully (only if an AJAX call is made)
   ns.popup_dialog = function(params) {
+    if (kivi.Materialize)
+      return kivi.Materialize.popup_dialog(params);
+
     var dialog;
 
     params            = params        || { };
@@ -645,6 +674,58 @@ namespace("kivi", function(ns) {
 
     $input.parent().replaceWith($area);
     $area.focus();
+  };
+
+  ns.set_cursor_position = function(selector, position) {
+    var $input = $(selector);
+    if (position === 'end')
+      position = $input.val().length;
+
+    $input.prop('selectionStart', position);
+    $input.prop('selectionEnd',   position);
+  };
+
+  ns._shell_escape = function(str) {
+    if (str.match(/^[a-zA-Z0-9.,_=+/-]+$/))
+      return str;
+
+    return "'" + str.replace(/'/, "'\\''") + "'";
+  };
+
+  ns.call_as_curl = function(params) {
+    params      = params || {};
+    var uri     = document.documentURI.replace(/\?.*/, '');
+    var command = ['curl', '--user', kivi.myconfig.login + ':SECRET', '--request', params.method || 'POST']
+
+    $(params.data || []).each(function(idx, elt) {
+      command = command.concat([ '--form-string', elt.name + '=' + (elt.value || '') ]);
+    });
+
+    command.push(uri);
+
+    return $.map(command, function(elt, idx) {
+      return kivi._shell_escape(elt);
+    }).join(' ');
+  };
+
+  ns.serialize = function(source, target = [], prefix, in_array = false) {
+    let arr_prefix = first => in_array ? (first ? "[+]" : "[]") : "";
+
+    if (Array.isArray(source) ) {
+      source.forEach(( val, i ) => {
+        ns.serialize(val, target, prefix + arr_prefix(i == 0), true);
+      });
+    } else if (typeof source === "object") {
+      let first = true;
+      for (let key in source) {
+        ns.serialize(source[key], target, (prefix !== undefined ? prefix + arr_prefix(first) + "." : "") + key);
+        first = false;
+      }
+    } else {
+      target.push({ name: prefix + arr_prefix(false), value: source });
+    }
+
+    return target;
   };
 });
 

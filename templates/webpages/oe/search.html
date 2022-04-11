@@ -64,7 +64,7 @@
     </tr>
     <tr>
      <th align="right">[% 'Project' | $T8 %]</th>
-     <td>[% P.project.picker("project_id", '', style=style) %]</td>
+     <td>[% P.project.picker("project_id", '', active="both", valid="both", style=style) %]</td>
      <th align="right">[% 'Part Number' | $T8 %]</th>
      <td>[% L.input_tag("parts_partnumber", "", style=style) %]</td>
     </tr>
@@ -76,6 +76,10 @@
      </td>
     </tr>
     [%- END %]
+    <tr>
+     <th align="right">[% 'Internal Notes' | $T8 %]</th>
+     <td>[% L.input_tag('intnotes', '', style=style) %]</td>
+    </tr>
     <tr>
      <th align="right">[% IF is_order %][% 'Order Date' | $T8 %][% ELSE %][% 'Quotation Date' | $T8 %][% END %] [% 'From' | $T8 %]</th>
      <td>
@@ -125,7 +129,7 @@
 [%- IF CT_CUSTOM_VARIABLES.size %]
     <tr>
       <td></td>
-      <td colspan=4 align=left><b>[% 'Custom variables for module' | $T8 %]: [%'Customers and vendors' | $T8 %]</td>
+      <td colspan=4 align=left><b>[% 'Custom variables for module' | $T8 %]: [%'Customers and vendors' | $T8 %]</b></td>
     </tr>
     [% CT_CUSTOM_VARIABLES_FILTER_CODE %]
 [%- END %]
@@ -201,7 +205,7 @@
        <tr>
         <td>
          <input name="l_name" id="l_name" class="checkbox" type="checkbox" value="Y" checked>
-         <label for="l_name">[% HTML.escape(vclabel) %]
+         <label for="l_name">[% HTML.escape(vclabel) %]</label>
         </td>
         <td>
          <input name="l_employee" id="l_employee" class="checkbox" type="checkbox" value="Y" checked>
@@ -258,7 +262,7 @@
          <label for="l_transaction_description">[% 'Transaction description' | $T8 %]</label>
         </td>
         <td>
-         [%- L.checkbox_tag('l_department', label => LxERP.t8('Department')) %]</td>
+         [%- L.checkbox_tag('l_department', label => LxERP.t8('Department')) %]
         </td>
 
        </tr>
@@ -270,6 +274,10 @@
         <td>
          <input name="l_salesman" id="l_salesman" class="checkbox" type="checkbox" value="Y">
          <label for="l_salesman">[% 'Salesman' | $T8 %]</label>
+        </td>
+        <td>
+         <input name="l_intnotes" id="l_intnotes" class="checkbox" type="checkbox" value="Y">
+         <label for="l_intnotes">[% 'Internal Notes' | $T8 %]</label>
         </td>
        </tr>
 [% IF type == 'sales_quotation' %]
@@ -291,7 +299,7 @@
         </td>
        </tr>
        <tr>
-        <td colspan=4 align=left><b>[% HTML.escape(vclabel) %]</td>
+        <td colspan=4 align=left><b>[% HTML.escape(vclabel) %]</b></td>
        </tr>
        <tr>
         <td>

@@ -43,6 +43,7 @@ existant
 fomr
 invoce
 lenght
+occured
 paramater
 pirce
 postition
@@ -51,6 +52,7 @@ puchase
 puhs
 sekf
 seperat
+substract
 sucess
 unkown
 varsion

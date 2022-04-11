@@ -4,7 +4,8 @@ use strict;
 use parent qw(SL::Controller::Base);
 
 use SL::Helper::Flash qw(flash_later);
-use SL::Presenter::Tag qw(select_tag hidden_tag);
+use SL::HTML::Util;
+use SL::Presenter::Tag qw(select_tag hidden_tag div_tag);
 use SL::Locale::String qw(t8);
 use SL::SessionFile::Random;
 use SL::PriceSource;
@@ -13,24 +14,32 @@ use SL::File;
 use SL::MIME;
 use SL::Util qw(trim);
 use SL::YAML;
+use SL::DB::AdditionalBillingAddress;
+use SL::DB::AuthUser;
+use SL::DB::History;
 use SL::DB::Order;
 use SL::DB::Default;
 use SL::DB::Unit;
 use SL::DB::Part;
+use SL::DB::PartClassification;
 use SL::DB::PartsGroup;
 use SL::DB::Printer;
 use SL::DB::Language;
 use SL::DB::RecordLink;
+use SL::DB::RequirementSpec;
+use SL::DB::Shipto;
+use SL::DB::Translation;
 
 use SL::Helper::CreatePDF qw(:all);
 use SL::Helper::PrintOptions;
 use SL::Helper::ShippedQty;
+use SL::Helper::UserPreferences::DisplayPreferences;
 use SL::Helper::UserPreferences::PositionsScrollbar;
 use SL::Helper::UserPreferences::UpdatePositions;
 
 use SL::Controller::Helper::GetModels;
 
-use List::Util qw(first);
+use List::Util qw(first sum0);
 use List::UtilsBy qw(sort_by uniq_by);
 use List::MoreUtils qw(any none pairwise first_index);
 use English qw(-no_match_vars);
@@ -40,20 +49,23 @@ use Sort::Naturally;
 
 use Rose::Object::MakeMethods::Generic
 (
- scalar => [ qw(item_ids_to_delete) ],
- 'scalar --get_set_init' => [ qw(order valid_types type cv p multi_items_models all_price_factors search_cvpartnumber show_update_button) ],
+ scalar => [ qw(item_ids_to_delete is_custom_shipto_to_delete) ],
+ 'scalar --get_set_init' => [ qw(order valid_types type cv p all_price_factors search_cvpartnumber show_update_button part_picker_classification_ids) ],
 );
 
 
 # safety
 __PACKAGE__->run_before('check_auth');
 
+__PACKAGE__->run_before('check_auth_for_edit',
+                        except => [ qw(edit show_customer_vendor_details_dialog price_popup load_second_rows) ]);
+
 __PACKAGE__->run_before('recalc',
-                        only => [ qw(save save_as_new save_and_delivery_order save_and_invoice save_and_ap_transaction
+                        only => [ qw(save save_as_new save_and_delivery_order save_and_invoice save_and_invoice_for_advance_payment save_and_final_invoice save_and_ap_transaction
                                      print send_email) ]);
 
 __PACKAGE__->run_before('get_unalterable_data',
-                        only => [ qw(save save_as_new save_and_delivery_order save_and_invoice save_and_ap_transaction
+                        only => [ qw(save save_as_new save_and_delivery_order save_and_invoice save_and_invoice_for_advance_payment save_and_final_invoice save_and_ap_transaction
                                      print send_email) ]);
 
 #
@@ -65,9 +77,14 @@ sub action_add {
   my ($self) = @_;
 
   $self->order->transdate(DateTime->now_local());
-  my $extra_days = $self->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval       :
-                   $self->{type} eq 'sales_order'     ? $::instance_conf->get_delivery_date_interval : 1;
-  $self->order->reqdate(DateTime->today_local->next_workday(extra_days => $extra_days)) if !$self->order->reqdate;
+  my $extra_days = $self->type eq sales_quotation_type() ? $::instance_conf->get_reqdate_interval       :
+                   $self->type eq sales_order_type()     ? $::instance_conf->get_delivery_date_interval : 1;
+
+  if (   ($self->type eq sales_order_type()     &&  $::instance_conf->get_deliverydate_on)
+      || ($self->type eq sales_quotation_type() &&  $::instance_conf->get_reqdate_on)
+      && (!$self->order->reqdate)) {
+    $self->order->reqdate(DateTime->today_local->next_workday(extra_days => $extra_days));
+  }
 
 
   $self->pre_render();
@@ -92,11 +109,10 @@ sub action_edit {
     foreach my $item (@{$self->order->items_sorted}) {
       $item->{new_fake_id} = join('_', 'new', Time::HiRes::gettimeofday(), int rand 1000000000000);
     }
-    # trigger rendering values for second row/longdescription as hidden,
-    # because they are loaded only on demand. So we need to keep the values
-    # from the source.
-    $_->{render_second_row}      = 1 for @{ $self->order->items_sorted };
-    $_->{render_longdescription} = 1 for @{ $self->order->items_sorted };
+    # trigger rendering values for second row as hidden, because they
+    # are loaded only on demand. So we need to keep the values from
+    # the source.
+    $_->{render_second_row} = 1 for @{ $self->order->items_sorted };
   }
 
   $self->recalc();
@@ -182,11 +198,19 @@ sub action_save {
            : '';
   flash_later('info', $text);
 
-  my @redirect_params = (
-    action => 'edit',
-    type   => $self->type,
-    id     => $self->order->id,
-  );
+  my @redirect_params;
+  if ($::form->{back_to_caller}) {
+    @redirect_params = $::form->{callback} ? ($::form->{callback})
+                                           : (controller => 'LoginScreen', action => 'user_login');
+
+  } else {
+    @redirect_params = (
+      action   => 'edit',
+      type     => $self->type,
+      id       => $self->order->id,
+      callback => $::form->{callback},
+    );
+  }
 
   $self->redirect_to(@redirect_params);
 }
@@ -217,11 +241,17 @@ sub action_save_as_new {
                         ? DateTime->today_local
                         : $order->transdate;
 
-  # Set new reqdate unless changed
+  # Set new reqdate unless changed if it is enabled in client config
   if ($order->reqdate == $saved_order->reqdate) {
-    my $extra_days = $self->{type} eq 'sales_quotation' ? $::instance_conf->get_reqdate_interval       :
-                     $self->{type} eq 'sales_order'     ? $::instance_conf->get_delivery_date_interval : 1;
-    $new_attrs{reqdate} = DateTime->today_local->next_workday(extra_days => $extra_days);
+    my $extra_days = $self->type eq sales_quotation_type() ? $::instance_conf->get_reqdate_interval       :
+                     $self->type eq sales_order_type()     ? $::instance_conf->get_delivery_date_interval : 1;
+
+    if (   ($self->type eq sales_order_type()     &&  !$::instance_conf->get_deliverydate_on)
+        || ($self->type eq sales_quotation_type() &&  !$::instance_conf->get_reqdate_on)) {
+      $new_attrs{reqdate} = '';
+    } else {
+      $new_attrs{reqdate} = DateTime->today_local->next_workday(extra_days => $extra_days);
+    }
   } else {
     $new_attrs{reqdate} = $order->reqdate;
   }
@@ -261,9 +291,10 @@ sub action_print {
   my $formname    = $::form->{print_options}->{formname};
   my $copies      = $::form->{print_options}->{copies};
   my $groupitems  = $::form->{print_options}->{groupitems};
+  my $printer_id  = $::form->{print_options}->{printer_id};
 
-  # only pdf and opendocument by now
-  if (none { $format eq $_ } qw(pdf opendocument opendocument_pdf)) {
+  # only PDF, OpenDocument & HTML for now
+  if (none { $format eq $_ } qw(pdf opendocument opendocument_pdf html)) {
     return $self->js->flash('error', t8('Format \'#1\' is not supported yet/anymore.', $format))->render;
   }
 
@@ -272,34 +303,33 @@ sub action_print {
     return $self->js->flash('error', t8('Media \'#1\' is not supported yet/anymore.', $media))->render;
   }
 
-  my $language;
-  $language = SL::DB::Language->new(id => $::form->{print_options}->{language_id})->load if $::form->{print_options}->{language_id};
-
   # create a form for generate_attachment_filename
   my $form   = Form->new;
   $form->{$self->nr_key()}  = $self->order->number;
   $form->{type}             = $self->type;
   $form->{format}           = $format;
   $form->{formname}         = $formname;
-  $form->{language}         = '_' . $language->template_code if $language;
-  my $pdf_filename          = $form->generate_attachment_filename();
+  $form->{language}         = '_' . $self->order->language->template_code if $self->order->language;
+  my $doc_filename          = $form->generate_attachment_filename();
 
-  my $pdf;
-  my @errors = generate_pdf($self->order, \$pdf, { format     => $format,
-                                                   formname   => $formname,
-                                                   language   => $language,
-                                                   groupitems => $groupitems });
+  my $doc;
+  my @errors = $self->generate_doc(\$doc, { media      => $media,
+                                            format     => $format,
+                                            formname   => $formname,
+                                            language   => $self->order->language,
+                                            printer_id => $printer_id,
+                                            groupitems => $groupitems });
   if (scalar @errors) {
-    return $self->js->flash('error', t8('Conversion to PDF failed: #1', $errors[0]))->render;
+    return $self->js->flash('error', t8('Generating the document failed: #1', $errors[0]))->render;
   }
 
   if ($media eq 'screen') {
     # screen/download
-    $self->js->flash('info', t8('The PDF has been created'));
+    $self->js->flash('info', t8('The document has been created.'));
     $self->send_file(
-      \$pdf,
-      type         => SL::MIME->mime_type_from_ext($pdf_filename),
-      name         => $pdf_filename,
+      \$doc,
+      type         => SL::MIME->mime_type_from_ext($doc_filename),
+      name         => $doc_filename,
       js_no_render => 1,
     );
 
@@ -308,49 +338,78 @@ sub action_print {
     my $printer_id = $::form->{print_options}->{printer_id};
     SL::DB::Printer->new(id => $printer_id)->load->print_document(
       copies  => $copies,
-      content => $pdf,
+      content => $doc,
     );
 
-    $self->js->flash('info', t8('The PDF has been printed'));
+    $self->js->flash('info', t8('The document has been printed.'));
   }
 
-  # copy file to webdav folder
-  if ($self->order->number && $::instance_conf->get_webdav_documents) {
-    my $webdav = SL::Webdav->new(
-      type     => $self->type,
-      number   => $self->order->number,
-    );
-    my $webdav_file = SL::Webdav::File->new(
-      webdav   => $webdav,
-      filename => $pdf_filename,
-    );
-    eval {
-      $webdav_file->store(data => \$pdf);
-      1;
-    } or do {
-      $self->js->flash('error', t8('Storing PDF to webdav folder failed: #1', $@));
-    }
+  my @warnings = $self->store_doc_to_webdav_and_filemanagement($doc, $doc_filename, $formname);
+  if (scalar @warnings) {
+    $self->js->flash('warning', $_) for @warnings;
   }
-  if ($self->order->number && $::instance_conf->get_doc_storage) {
-    eval {
-      SL::File->save(object_id     => $self->order->id,
-                     object_type   => $self->type,
-                     mime_type     => 'application/pdf',
-                     source        => 'created',
-                     file_type     => 'document',
-                     file_name     => $pdf_filename,
-                     file_contents => $pdf);
-      1;
-    } or do {
-      $self->js->flash('error', t8('Storing PDF in storage backend failed: #1', $@));
-    }
+
+  $self->save_history('PRINTED');
+
+  $self->js
+    ->run('kivi.ActionBar.setEnabled', '#save_and_email_action')
+    ->render;
+}
+sub action_preview_pdf {
+  my ($self) = @_;
+
+  my $errors = $self->save();
+  if (scalar @{ $errors }) {
+    $self->js->flash('error', $_) foreach @{ $errors };
+    return $self->js->render();
   }
-  $self->js->render;
+
+  $self->js_reset_order_and_item_ids_after_save;
+
+  my $format      = 'pdf';
+  my $media       = 'screen';
+  my $formname    = $self->type;
+
+  # only pdf
+  # create a form for generate_attachment_filename
+  my $form   = Form->new;
+  $form->{$self->nr_key()}  = $self->order->number;
+  $form->{type}             = $self->type;
+  $form->{format}           = $format;
+  $form->{formname}         = $formname;
+  $form->{language}         = '_' . $self->order->language->template_code if $self->order->language;
+  my $pdf_filename          = $form->generate_attachment_filename();
+
+  my $pdf;
+  my @errors = $self->generate_doc(\$pdf, { media      => $media,
+                                            format     => $format,
+                                            formname   => $formname,
+                                            language   => $self->order->language,
+                                          });
+  if (scalar @errors) {
+    return $self->js->flash('error', t8('Conversion to PDF failed: #1', $errors[0]))->render;
+  }
+  $self->save_history('PREVIEWED');
+  $self->js->flash('info', t8('The PDF has been previewed'));
+  # screen/download
+  $self->send_file(
+    \$pdf,
+    type         => SL::MIME->mime_type_from_ext($pdf_filename),
+    name         => $pdf_filename,
+    js_no_render => 0,
+  );
 }
 
 # open the email dialog
-sub action_show_email_dialog {
+sub action_save_and_show_email_dialog {
   my ($self) = @_;
+
+  my $errors = $self->save();
+
+  if (scalar @{ $errors }) {
+    $self->js->flash('error', $_) foreach @{ $errors };
+    return $self->js->render();
+  }
 
   my $cv_method = $self->cv;
 
@@ -368,10 +427,13 @@ sub action_show_email_dialog {
 
   my $form = Form->new;
   $form->{$self->nr_key()}  = $self->order->number;
+  $form->{cusordnumber}     = $self->order->cusordnumber;
   $form->{formname}         = $self->type;
   $form->{type}             = $self->type;
-  $form->{language}         = 'de';
+  $form->{language}         = '_' . $self->order->language->template_code if $self->order->language;
+  $form->{language_id}      = $self->order->language->id                  if $self->order->language;
   $form->{format}           = 'pdf';
+  $form->{cp_id}            = $self->order->contact->cp_id if $self->order->contact;
 
   $email_form->{subject}             = $form->generate_email_subject();
   $email_form->{attachment_filename} = $form->generate_attachment_filename();
@@ -379,11 +441,22 @@ sub action_show_email_dialog {
   $email_form->{js_send_function}    = 'kivi.Order.send_email()';
 
   my %files = $self->get_files_for_email_dialog();
+
+  my @employees_with_email = grep {
+    my $user = SL::DB::Manager::AuthUser->find_by(login => $_->login);
+    $user && !!trim($user->get_config_value('email'));
+  } @{ SL::DB::Manager::Employee->get_all_sorted(query => [ deleted => 0 ]) };
+
+
+  my $all_partner_email_addresses = $self->order->customervendor->get_all_email_addresses();
+
   my $dialog_html = $self->render('common/_send_email_dialog', { output => 0 },
-                                  email_form  => $email_form,
-                                  show_bcc    => $::auth->assert('email_bcc', 'may fail'),
-                                  FILES       => \%files,
-                                  is_customer => $self->cv eq 'customer',
+                                  email_form    => $email_form,
+                                  show_bcc      => $::auth->assert('email_bcc', 'may fail'),
+                                  FILES         => \%files,
+                                  is_customer   => $self->cv eq 'customer',
+                                  ALL_EMPLOYEES => \@employees_with_email,
+                                  ALL_PARTNER_EMAIL_ADDRESSES => $all_partner_email_addresses,
   );
 
   $self->js
@@ -409,6 +482,12 @@ sub action_send_email {
   $self->js_reset_order_and_item_ids_after_save;
 
   my $email_form  = delete $::form->{email_form};
+
+  if ($email_form->{additional_to}) {
+    $email_form->{to} = join ', ', grep { $_ } $email_form->{to}, @{$email_form->{additional_to}};
+    delete $email_form->{additional_to};
+  }
+
   my %field_names = (to => 'email');
 
   $::form->{ $field_names{$_} // $_ } = $email_form->{$_} for keys %{ $email_form };
@@ -420,48 +499,71 @@ sub action_send_email {
   $::form->{$_}     = $::form->{print_options}->{$_} for keys %{ $::form->{print_options} };
   $::form->{media}  = 'email';
 
-  if (($::form->{attachment_policy} // '') !~ m{^(?:old_file|no_file)$}) {
-    my $language;
-    $language = SL::DB::Language->new(id => $::form->{print_options}->{language_id})->load if $::form->{print_options}->{language_id};
+  $::form->{attachment_policy} //= '';
 
-    my $pdf;
-    my @errors = generate_pdf($self->order, \$pdf, {media      => $::form->{media},
-                                                    format     => $::form->{print_options}->{format},
-                                                    formname   => $::form->{print_options}->{formname},
-                                                    language   => $language,
-                                                    groupitems => $::form->{print_options}->{groupitems}});
+  # Is an old file version available?
+  my $attfile;
+  if ($::form->{attachment_policy} eq 'old_file') {
+    $attfile = SL::File->get_all(object_id     => $self->order->id,
+                                 object_type   => $self->type,
+                                 file_type     => 'document',
+                                 print_variant => $::form->{formname});
+  }
+
+  if ($::form->{attachment_policy} ne 'no_file' && !($::form->{attachment_policy} eq 'old_file' && $attfile)) {
+    my $doc;
+    my @errors = $self->generate_doc(\$doc, {media      => $::form->{media},
+                                             format     => $::form->{print_options}->{format},
+                                             formname   => $::form->{print_options}->{formname},
+                                             language   => $self->order->language,
+                                             printer_id => $::form->{print_options}->{printer_id},
+                                             groupitems => $::form->{print_options}->{groupitems}});
     if (scalar @errors) {
-      return $self->js->flash('error', t8('Conversion to PDF failed: #1', $errors[0]))->render($self);
+      return $self->js->flash('error', t8('Generating the document failed: #1', $errors[0]))->render($self);
+    }
+
+    my @warnings = $self->store_doc_to_webdav_and_filemanagement($doc, $::form->{attachment_filename}, $::form->{formname});
+    if (scalar @warnings) {
+      flash_later('warning', $_) for @warnings;
     }
 
     my $sfile = SL::SessionFile::Random->new(mode => "w");
-    $sfile->fh->print($pdf);
+    $sfile->fh->print($doc);
     $sfile->fh->close;
 
     $::form->{tmpfile} = $sfile->file_name;
     $::form->{tmpdir}  = $sfile->get_path; # for Form::cleanup which may be called in Form::send_email
   }
 
-  $::form->send_email(\%::myconfig, 'pdf');
+  $::form->{id} = $self->order->id; # this is used in SL::Mailer to create a linked record to the mail
+  $::form->send_email(\%::myconfig, $::form->{print_options}->{format});
 
-  # internal notes
-  my $intnotes = $self->order->intnotes;
-  $intnotes   .= "\n\n" if $self->order->intnotes;
-  $intnotes   .= t8('[email]')                                                                                        . "\n";
-  $intnotes   .= t8('Date')       . ": " . $::locale->format_date_object(DateTime->now_local, precision => 'seconds') . "\n";
-  $intnotes   .= t8('To (email)') . ": " . $::form->{email}                                                           . "\n";
-  $intnotes   .= t8('Cc')         . ": " . $::form->{cc}                                                              . "\n"    if $::form->{cc};
-  $intnotes   .= t8('Bcc')        . ": " . $::form->{bcc}                                                             . "\n"    if $::form->{bcc};
-  $intnotes   .= t8('Subject')    . ": " . $::form->{subject}                                                         . "\n\n";
-  $intnotes   .= t8('Message')    . ": " . $::form->{message};
+  # internal notes unless no email journal
+  unless ($::instance_conf->get_email_journal) {
+    my $intnotes = $self->order->intnotes;
+    $intnotes   .= "\n\n" if $self->order->intnotes;
+    $intnotes   .= t8('[email]')                                                                                        . "\n";
+    $intnotes   .= t8('Date')       . ": " . $::locale->format_date_object(DateTime->now_local, precision => 'seconds') . "\n";
+    $intnotes   .= t8('To (email)') . ": " . $::form->{email}                                                           . "\n";
+    $intnotes   .= t8('Cc')         . ": " . $::form->{cc}                                                              . "\n"    if $::form->{cc};
+    $intnotes   .= t8('Bcc')        . ": " . $::form->{bcc}                                                             . "\n"    if $::form->{bcc};
+    $intnotes   .= t8('Subject')    . ": " . $::form->{subject}                                                         . "\n\n";
+    $intnotes   .= t8('Message')    . ": " . SL::HTML::Util->strip($::form->{message});
 
-  $self->order->update_attributes(intnotes => $intnotes);
+    $self->order->update_attributes(intnotes => $intnotes);
+  }
 
-  $self->js
-      ->val('#order_intnotes', $intnotes)
-      ->run('kivi.Order.close_email_dialog')
-      ->flash('info', t8('The email has been sent.'))
-      ->render($self);
+  $self->save_history('MAILED');
+
+  flash_later('info', t8('The email has been sent.'));
+
+  my @redirect_params = (
+    action => 'edit',
+    type   => $self->type,
+    id     => $self->order->id,
+  );
+
+  $self->redirect_to(@redirect_params);
 }
 
 # open the periodic invoices config dialog
@@ -483,8 +585,31 @@ sub action_show_periodic_invoices_config_dialog {
                                                                                 translation_type =>"preset_text_periodic_invoices_email_subject"),
                                                    email_body              => GenericTranslations->get(
                                                                                 language_id      => $::form->{language_id},
+                                                                                translation_type => "salutation_general")
+                                                                            . GenericTranslations->get(
+                                                                                language_id      => $::form->{language_id},
+                                                                                translation_type => "salutation_punctuation_mark") . "\n\n"
+                                                                            . GenericTranslations->get(
+                                                                                language_id      => $::form->{language_id},
                                                                                 translation_type =>"preset_text_periodic_invoices_email_body"),
   );
+  # for older configs, replace email preset text if not yet set.
+  $config->email_subject(GenericTranslations->get(
+                                              language_id      => $::form->{language_id},
+                                              translation_type =>"preset_text_periodic_invoices_email_subject")
+                        ) unless $config->email_subject;
+
+  $config->email_body(GenericTranslations->get(
+                                              language_id      => $::form->{language_id},
+                                              translation_type => "salutation_general")
+                    . GenericTranslations->get(
+                                              language_id      => $::form->{language_id},
+                                              translation_type => "salutation_punctuation_mark") . "\n\n"
+                    . GenericTranslations->get(
+                                              language_id      => $::form->{language_id},
+                                              translation_type =>"preset_text_periodic_invoices_email_body")
+                     ) unless $config->email_body;
+
   $config->periodicity('m')             if none { $_ eq $config->periodicity             }       @SL::DB::PeriodicInvoicesConfig::PERIODICITIES;
   $config->order_value_periodicity('p') if none { $_ eq $config->order_value_periodicity } ('p', @SL::DB::PeriodicInvoicesConfig::ORDER_VALUE_PERIODICITIES);
 
@@ -496,7 +621,10 @@ sub action_show_periodic_invoices_config_dialog {
 
   if ($::form->{customer_id}) {
     $::form->{ALL_CONTACTS} = SL::DB::Manager::Contact->get_all_sorted(where => [ cp_cv_id => $::form->{customer_id} ]);
-    $::form->{email_recipient_invoice_address} = SL::DB::Manager::Customer->find_by(id => $::form->{customer_id})->invoice_mail;
+    my $customer_object = SL::DB::Manager::Customer->find_by(id => $::form->{customer_id});
+    $::form->{postal_invoice}                  = $customer_object->postal_invoice;
+    $::form->{email_recipient_invoice_address} = $::form->{postal_invoice} ? '' : $customer_object->invoice_mail;
+    $config->send_email(0) if $::form->{postal_invoice};
   }
 
   $self->render('oe/edit_periodic_invoices_config', { layout => 0 },
@@ -569,27 +697,20 @@ sub action_get_has_active_periodic_invoices {
 sub action_save_and_delivery_order {
   my ($self) = @_;
 
-  my $errors = $self->save();
-
-  if (scalar @{ $errors }) {
-    $self->js->flash('error', $_) foreach @{ $errors };
-    return $self->js->render();
-  }
-
-  my $text = $self->type eq sales_order_type()       ? $::locale->text('The order has been saved')
-           : $self->type eq purchase_order_type()    ? $::locale->text('The order has been saved')
-           : $self->type eq sales_quotation_type()   ? $::locale->text('The quotation has been saved')
-           : $self->type eq request_quotation_type() ? $::locale->text('The rfq has been saved')
-           : '';
-  flash_later('info', $text);
-
-  my @redirect_params = (
+  $self->save_and_redirect_to(
     controller => 'oe.pl',
     action     => 'oe_delivery_order_from_order',
-    id         => $self->order->id,
   );
+}
 
-  $self->redirect_to(@redirect_params);
+sub action_save_and_supplier_delivery_order {
+  my ($self) = @_;
+
+  $self->save_and_redirect_to(
+    controller => 'controller.pl',
+    action     => 'DeliveryOrder/add_from_order',
+    type       => 'supplier_delivery_order',
+  );
 }
 
 # save the order and redirect to the frontend subroutine for a new
@@ -597,27 +718,40 @@ sub action_save_and_delivery_order {
 sub action_save_and_invoice {
   my ($self) = @_;
 
-  my $errors = $self->save();
-
-  if (scalar @{ $errors }) {
-    $self->js->flash('error', $_) foreach @{ $errors };
-    return $self->js->render();
-  }
-
-  my $text = $self->type eq sales_order_type()       ? $::locale->text('The order has been saved')
-           : $self->type eq purchase_order_type()    ? $::locale->text('The order has been saved')
-           : $self->type eq sales_quotation_type()   ? $::locale->text('The quotation has been saved')
-           : $self->type eq request_quotation_type() ? $::locale->text('The rfq has been saved')
-           : '';
-  flash_later('info', $text);
-
-  my @redirect_params = (
+  $self->save_and_redirect_to(
     controller => 'oe.pl',
     action     => 'oe_invoice_from_order',
-    id         => $self->order->id,
   );
+}
 
-  $self->redirect_to(@redirect_params);
+sub action_save_and_invoice_for_advance_payment {
+  my ($self) = @_;
+
+  $self->save_and_redirect_to(
+    controller       => 'oe.pl',
+    action           => 'oe_invoice_from_order',
+    new_invoice_type => 'invoice_for_advance_payment',
+  );
+}
+
+sub action_save_and_final_invoice {
+  my ($self) = @_;
+
+  $self->save_and_redirect_to(
+    controller       => 'oe.pl',
+    action           => 'oe_invoice_from_order',
+    new_invoice_type => 'final_invoice',
+  );
+}
+
+# workflow from sales order to sales quotation
+sub action_sales_quotation {
+  $_[0]->workflow_sales_or_request_for_quotation();
+}
+
+# workflow from sales order to sales quotation
+sub action_request_for_quotation {
+  $_[0]->workflow_sales_or_request_for_quotation();
 }
 
 # workflow from sales quotation to sales order
@@ -634,27 +768,10 @@ sub action_purchase_order {
 sub action_save_and_ap_transaction {
   my ($self) = @_;
 
-  my $errors = $self->save();
-
-  if (scalar @{ $errors }) {
-    $self->js->flash('error', $_) foreach @{ $errors };
-    return $self->js->render();
-  }
-
-  my $text = $self->type eq sales_order_type()       ? $::locale->text('The order has been saved')
-           : $self->type eq purchase_order_type()    ? $::locale->text('The order has been saved')
-           : $self->type eq sales_quotation_type()   ? $::locale->text('The quotation has been saved')
-           : $self->type eq request_quotation_type() ? $::locale->text('The rfq has been saved')
-           : '';
-  flash_later('info', $text);
-
-  my @redirect_params = (
+  $self->save_and_redirect_to(
     controller => 'ap.pl',
     action     => 'add_from_purchase_order',
-    id         => $self->order->id,
   );
-
-  $self->redirect_to(@redirect_params);
 }
 
 # set form elements in respect to a changed customer or vendor
@@ -675,24 +792,33 @@ sub action_customer_vendor_changed {
   }
 
   if ($self->order->$cv_method->shipto && scalar @{ $self->order->$cv_method->shipto } > 0) {
-    $self->js->show('#shipto_row');
+    $self->js->show('#shipto_selection');
   } else {
-    $self->js->hide('#shipto_row');
+    $self->js->hide('#shipto_selection');
+  }
+
+  if ($cv_method eq 'customer') {
+    my $show_hide = scalar @{ $self->order->customer->additional_billing_addresses } > 0 ? 'show' : 'hide';
+    $self->js->$show_hide('#billing_address_row');
   }
 
   $self->js->val( '#order_salesman_id',      $self->order->salesman_id)        if $self->order->is_sales;
 
   $self->js
-    ->replaceWith('#order_cp_id',            $self->build_contact_select)
-    ->replaceWith('#order_shipto_id',        $self->build_shipto_select)
-    ->replaceWith('#business_info_row',      $self->build_business_info_row)
-    ->val(        '#order_taxzone_id',       $self->order->taxzone_id)
-    ->val(        '#order_taxincluded',      $self->order->taxincluded)
-    ->val(        '#order_payment_id',       $self->order->payment_id)
-    ->val(        '#order_delivery_term_id', $self->order->delivery_term_id)
-    ->val(        '#order_intnotes',         $self->order->intnotes)
-    ->val(        '#language_id',            $self->order->$cv_method->language_id)
-    ->focus(      '#order_' . $self->cv . '_id');
+    ->replaceWith('#order_cp_id',              $self->build_contact_select)
+    ->replaceWith('#order_shipto_id',          $self->build_shipto_select)
+    ->replaceWith('#shipto_inputs  ',          $self->build_shipto_inputs)
+    ->replaceWith('#order_billing_address_id', $self->build_billing_address_select)
+    ->replaceWith('#business_info_row',        $self->build_business_info_row)
+    ->val(        '#order_taxzone_id',         $self->order->taxzone_id)
+    ->val(        '#order_taxincluded',        $self->order->taxincluded)
+    ->val(        '#order_currency_id',        $self->order->currency_id)
+    ->val(        '#order_payment_id',         $self->order->payment_id)
+    ->val(        '#order_delivery_term_id',   $self->order->delivery_term_id)
+    ->val(        '#order_intnotes',           $self->order->intnotes)
+    ->val(        '#order_language_id',        $self->order->$cv_method->language_id)
+    ->focus(      '#order_' . $self->cv . '_id')
+    ->run('kivi.Order.update_exchangerate');
 
   $self->js_redisplay_amounts_and_taxes;
   $self->js_redisplay_cvpartnumbers;
@@ -720,6 +846,11 @@ sub action_show_customer_vendor_details_dialog {
   $details{payment_terms}       = $cv->payment->description       if $cv->payment;
   $details{pricegroup}          = $cv->pricegroup->pricegroup     if $is_customer && $cv->pricegroup;
 
+  if ($is_customer) {
+    foreach my $entry (@{ $cv->additional_billing_addresses }) {
+      push @{ $details{ADDITIONAL_BILLING_ADDRESSES} },   { map { $_ => $entry->$_ } @{$entry->meta->columns} };
+    }
+  }
   foreach my $entry (@{ $cv->shipto }) {
     push @{ $details{SHIPTO} },   { map { $_ => $entry->$_ } @{$entry->meta->columns} };
   }
@@ -756,6 +887,8 @@ sub action_unit_changed {
 sub action_add_item {
   my ($self) = @_;
 
+  delete $::form->{add_item}->{create_part_type};
+
   my $form_attr = $::form->{add_item};
 
   return unless $form_attr->{parts_id};
@@ -775,8 +908,13 @@ sub action_add_item {
                                      SELF => $self,
   );
 
-  $self->js
-    ->append('#row_table_id', $row_as_html);
+  if ($::form->{insert_before_item_id}) {
+    $self->js
+      ->before ('.row_entry:has(#item_' . $::form->{insert_before_item_id} . ')', $row_as_html);
+  } else {
+    $self->js
+      ->append('#row_table_id', $row_as_html);
+  }
 
   if ( $item->part->is_assortment ) {
     $form_attr->{qty_as_number} = 1 unless $form_attr->{qty_as_number};
@@ -800,54 +938,33 @@ sub action_add_item {
                                          ID   => $item_id,
                                          SELF => $self,
       );
-      $self->js
-        ->append('#row_table_id', $row_as_html);
+      if ($::form->{insert_before_item_id}) {
+        $self->js
+          ->before ('.row_entry:has(#item_' . $::form->{insert_before_item_id} . ')', $row_as_html);
+      } else {
+        $self->js
+          ->append('#row_table_id', $row_as_html);
+      }
     };
   };
 
   $self->js
     ->val('.add_item_input', '')
     ->run('kivi.Order.init_row_handlers')
-    ->run('kivi.Order.row_table_scroll_down')
     ->run('kivi.Order.renumber_positions')
     ->focus('#add_item_parts_id_name');
 
+  $self->js->run('kivi.Order.row_table_scroll_down') if !$::form->{insert_before_item_id};
+
   $self->js_redisplay_amounts_and_taxes;
   $self->js->render();
-}
-
-# open the dialog for entering multiple items at once
-sub action_show_multi_items_dialog {
-  $_[0]->render('order/tabs/_multi_items_dialog', { layout => 0 },
-                all_partsgroups => SL::DB::Manager::PartsGroup->get_all);
-}
-
-# update the filter results in the multi item dialog
-sub action_multi_items_update_result {
-  my $max_count = 100;
-
-  $::form->{multi_items}->{filter}->{obsolete} = 0;
-
-  my $count = $_[0]->multi_items_models->count;
-
-  if ($count == 0) {
-    my $text = SL::Presenter::EscapedText->new(text => $::locale->text('No results.'));
-    $_[0]->render($text, { layout => 0 });
-  } elsif ($count > $max_count) {
-    my $text = SL::Presenter::EscapedText->new(text => $::locale->text('Too many results (#1 from #2).', $count, $max_count));
-    $_[0]->render($text, { layout => 0 });
-  } else {
-    my $multi_items = $_[0]->multi_items_models->get;
-    $_[0]->render('order/tabs/_multi_items_result', { layout => 0 },
-                  multi_items => $multi_items);
-  }
 }
 
 # add item rows for multiple items at once
 sub action_add_multi_items {
   my ($self) = @_;
 
-  my @form_attr = grep { $_->{qty_as_number} } @{ $::form->{add_multi_items} };
+  my @form_attr = grep { $_->{qty_as_number} } @{ $::form->{add_items} };
   return $self->js->render() unless scalar @form_attr;
 
   my @items;
@@ -882,15 +999,22 @@ sub action_add_multi_items {
                                        SELF => $self,
     );
 
-    $self->js->append('#row_table_id', $row_as_html);
+    if ($::form->{insert_before_item_id}) {
+      $self->js
+        ->before ('.row_entry:has(#item_' . $::form->{insert_before_item_id} . ')', $row_as_html);
+    } else {
+      $self->js
+        ->append('#row_table_id', $row_as_html);
+    }
   }
 
   $self->js
-    ->run('kivi.Order.close_multi_items_dialog')
+    ->run('kivi.Part.close_picker_dialogs')
     ->run('kivi.Order.init_row_handlers')
-    ->run('kivi.Order.row_table_scroll_down')
     ->run('kivi.Order.renumber_positions')
     ->focus('#add_item_parts_id_name');
+
+  $self->js->run('kivi.Order.row_table_scroll_down') if !$::form->{insert_before_item_id};
 
   $self->js_redisplay_amounts_and_taxes;
   $self->js->render();
@@ -905,6 +1029,18 @@ sub action_recalc_amounts_and_taxes {
   $self->js_redisplay_line_values;
   $self->js_redisplay_amounts_and_taxes;
   $self->js->render();
+}
+
+sub action_update_exchangerate {
+  my ($self) = @_;
+
+  my $data = {
+    is_standard   => $self->order->currency_id == $::instance_conf->get_currency_id,
+    currency_name => $self->order->currency->name,
+    exchangerate  => $self->order->daily_exchangerate_as_null_number,
+  };
+
+  $self->render(\SL::JSON::to_json($data), { type => 'json', process => 0 });
 }
 
 # redisplay item rows if they are sorted by an attribute
@@ -952,20 +1088,59 @@ sub action_price_popup {
   $self->render_price_dialog($item);
 }
 
-# get the longdescription for an item if the dialog to enter/change the
-# longdescription was opened and the longdescription is empty
-#
-# If this item is new, get the longdescription from Part.
-# Otherwise get it from OrderItem.
-sub action_get_item_longdescription {
-  my $longdescription;
+# save the order in a session variable and redirect to the part controller
+sub action_create_part {
+  my ($self) = @_;
 
-  if ($::form->{item_id}) {
-    $longdescription = SL::DB::OrderItem->new(id => $::form->{item_id})->load->longdescription;
-  } elsif ($::form->{parts_id}) {
-    $longdescription = SL::DB::Part->new(id => $::form->{parts_id})->load->notes;
+  my $previousform = $::auth->save_form_in_session(non_scalars => 1);
+
+  my $callback     = $self->url_for(
+    action       => 'return_from_create_part',
+    type         => $self->type, # type is needed for check_auth on return
+    previousform => $previousform,
+  );
+
+  flash_later('info', t8('You are adding a new part while you are editing another document. You will be redirected to your document when saving the new part or aborting this form.'));
+
+  my @redirect_params = (
+    controller => 'Part',
+    action     => 'add',
+    part_type  => $::form->{add_item}->{create_part_type},
+    callback   => $callback,
+    show_abort => 1,
+  );
+
+  $self->redirect_to(@redirect_params);
+}
+
+sub action_return_from_create_part {
+  my ($self) = @_;
+
+  $self->{created_part} = SL::DB::Part->new(id => delete $::form->{new_parts_id})->load if $::form->{new_parts_id};
+
+  $::auth->restore_form_from_session(delete $::form->{previousform});
+
+  # set item ids to new fake id, to identify them as new items
+  foreach my $item (@{$self->order->items_sorted}) {
+    $item->{new_fake_id} = join('_', 'new', Time::HiRes::gettimeofday(), int rand 1000000000000);
   }
-  $_[0]->render(\ $longdescription, { type => 'text' });
+
+  $self->recalc();
+  $self->get_unalterable_data();
+  $self->pre_render();
+
+  # trigger rendering values for second row/longdescription as hidden,
+  # because they are loaded only on demand. So we need to keep the values
+  # from the source.
+  $_->{render_second_row}      = 1 for @{ $self->order->items_sorted };
+  $_->{render_longdescription} = 1 for @{ $self->order->items_sorted };
+
+  $self->render(
+    'order/form',
+    title => $self->get_title_for('edit'),
+    %{$self->{template_args}}
+  );
+
 }
 
 # load the second row for one or more items
@@ -994,11 +1169,12 @@ sub action_update_row_from_master_data {
   my ($self) = @_;
 
   foreach my $item_id (@{ $::form->{item_ids} }) {
-    my $idx  = first_index { $_ eq $item_id } @{ $::form->{orderitem_ids} };
-    my $item = $self->order->items_sorted->[$idx];
+    my $idx   = first_index { $_ eq $item_id } @{ $::form->{orderitem_ids} };
+    my $item  = $self->order->items_sorted->[$idx];
+    my $texts = get_part_texts($item->part, $self->order->language_id);
 
-    $item->description($item->part->description);
-    $item->longdescription($item->part->notes);
+    $item->description($texts->{description});
+    $item->longdescription($texts->{longdescription});
 
     my $price_source = SL::PriceSource->new(record_item => $item, record => $self->order);
 
@@ -1011,8 +1187,10 @@ sub action_update_row_from_master_data {
       $price_src = $price_source->best_price
                  ? $price_source->best_price
                  : $price_source->price_from_source("");
+      $price_src->price($::form->round_amount($price_src->price / $self->order->exchangerate, 5)) if $self->order->exchangerate;
       $price_src->price(0) if !$price_source->best_price;
     }
+
 
     $item->sellprice($price_src->price);
     $item->active_price_source($price_src);
@@ -1202,29 +1380,29 @@ sub init_order {
   $_[0]->make_order;
 }
 
-# model used to filter/display the parts in the multi-items dialog
-sub init_multi_items_models {
-  SL::Controller::Helper::GetModels->new(
-    controller     => $_[0],
-    model          => 'Part',
-    with_objects   => [ qw(unit_obj) ],
-    disable_plugin => 'paginated',
-    source         => $::form->{multi_items},
-    sorted         => {
-      _default    => {
-        by  => 'partnumber',
-        dir => 1,
-      },
-      partnumber  => t8('Partnumber'),
-      description => t8('Description')}
-  );
-}
-
 sub init_all_price_factors {
   SL::DB::Manager::PriceFactor->get_all;
 }
 
+sub init_part_picker_classification_ids {
+  my ($self)    = @_;
+  my $attribute = 'used_for_' . ($self->type =~ m{sales} ? 'sale' : 'purchase');
+
+  return [ map { $_->id } @{ SL::DB::Manager::PartClassification->get_all(where => [ $attribute => 1 ]) } ];
+}
+
 sub check_auth {
+  my ($self) = @_;
+
+  my $right_for = { map { $_ => $_.'_edit' . ' | ' . $_.'_view' } @{$self->valid_types} };
+
+  my $right   = $right_for->{ $self->type };
+  $right    ||= 'DOES_NOT_EXIST';
+
+  $::auth->assert($right);
+}
+
+sub check_auth_for_edit {
   my ($self) = @_;
 
   my $right_for = { map { $_ => $_.'_edit' } @{$self->valid_types} };
@@ -1250,19 +1428,53 @@ sub build_contact_select {
   );
 }
 
+# build the selection box for the additional billing address
+#
+# Needed, if customer/vendor changed.
+sub build_billing_address_select {
+  my ($self) = @_;
+
+  return '' if $self->cv ne 'customer';
+
+  select_tag('order.billing_address_id',
+             [ {displayable_id => '', id => ''}, $self->order->{$self->cv}->additional_billing_addresses ],
+             value_key  => 'id',
+             title_key  => 'displayable_id',
+             default    => $self->order->billing_address_id,
+             with_empty => 0,
+             style      => 'width: 300px',
+  );
+}
+
 # build the selection box for shiptos
 #
 # Needed, if customer/vendor changed.
 sub build_shipto_select {
   my ($self) = @_;
 
-  select_tag('order.shipto_id', [ $self->order->{$self->cv}->shipto ],
-    value_key  => 'shipto_id',
-    title_key  => 'displayable_id',
-    default    => $self->order->shipto_id,
-    with_empty => 1,
-    style      => 'width: 300px',
+  select_tag('order.shipto_id',
+             [ {displayable_id => t8("No/individual shipping address"), shipto_id => ''}, $self->order->{$self->cv}->shipto ],
+             value_key  => 'shipto_id',
+             title_key  => 'displayable_id',
+             default    => $self->order->shipto_id,
+             with_empty => 0,
+             style      => 'width: 300px',
   );
+}
+
+# build the inputs for the cusom shipto dialog
+#
+# Needed, if customer/vendor changed.
+sub build_shipto_inputs {
+  my ($self) = @_;
+
+  my $content = $self->p->render('common/_ship_to_dialog',
+                                 vc_obj      => $self->order->customervendor,
+                                 cs_obj      => $self->order->custom_shipto,
+                                 cvars       => $self->order->custom_shipto->cvars_by_config,
+                                 id_selector => '#order_shipto_id');
+
+  div_tag($content, id => 'shipto_inputs');
 }
 
 # render the info line for business
@@ -1314,6 +1526,12 @@ sub load_order {
   return if !$::form->{id};
 
   $self->order(SL::DB::Order->new(id => $::form->{id})->load);
+
+  # Add an empty custom shipto to the order, so that the dialog can render the cvar inputs.
+  # You need a custom shipto object to call cvars_by_config to get the cvars.
+  $self->order->custom_shipto(SL::DB::Shipto->new(module => 'OE', custom_variables => [])) if !$self->order->custom_shipto;
+
+  return $self->order;
 }
 
 # load or create a new order object
@@ -1330,8 +1548,9 @@ sub make_order {
   # order here solves this problem.
   my $order;
   $order   = SL::DB::Order->new(id => $::form->{id})->load(with => [ 'orderitems', 'orderitems.part' ]) if $::form->{id};
-  $order ||= SL::DB::Order->new(orderitems => [],
-                                quotation  => (any { $self->type eq $_ } (sales_quotation_type(), request_quotation_type())));
+  $order ||= SL::DB::Order->new(orderitems  => [],
+                                quotation   => (any { $self->type eq $_ } (sales_quotation_type(), request_quotation_type())),
+                                currency_id => $::instance_conf->get_currency_id(),);
 
   my $cv_id_method = $self->cv . '_id';
   if (!$::form->{id} && $::form->{$cv_id_method}) {
@@ -1339,10 +1558,12 @@ sub make_order {
     setup_order_from_cv($order);
   }
 
-  my $form_orderitems               = delete $::form->{order}->{orderitems};
-  my $form_periodic_invoices_config = delete $::form->{order}->{periodic_invoices_config};
+  my $form_orderitems                  = delete $::form->{order}->{orderitems};
+  my $form_periodic_invoices_config    = delete $::form->{order}->{periodic_invoices_config};
 
   $order->assign_attributes(%{$::form->{order}});
+
+  $self->setup_custom_shipto_from_form($order, $::form);
 
   if (my $periodic_invoices_config_attrs = $form_periodic_invoices_config ? SL::YAML::Load($form_periodic_invoices_config) : undef) {
     my $periodic_invoices_config = $order->periodic_invoices_config || $order->periodic_invoices_config(SL::DB::PeriodicInvoicesConfig->new);
@@ -1390,9 +1611,13 @@ sub make_item {
   $item ||= SL::DB::OrderItem->new(custom_variables => []);
 
   $item->assign_attributes(%$attr);
-  $item->longdescription($item->part->notes)                     if $is_new && !defined $attr->{longdescription};
-  $item->project_id($record->globalproject_id)                   if $is_new && !defined $attr->{project_id};
-  $item->lastcost($record->is_sales ? $item->part->lastcost : 0) if $is_new && !defined $attr->{lastcost_as_number};
+
+  if ($is_new) {
+    my $texts = get_part_texts($item->part, $record->language_id);
+    $item->longdescription($texts->{longdescription})              if !defined $attr->{longdescription};
+    $item->project_id($record->globalproject_id)                   if !defined $attr->{project_id};
+    $item->lastcost($record->is_sales ? $item->part->lastcost : 0) if !defined $attr->{lastcost_as_number};
+  }
 
   return $item;
 }
@@ -1429,8 +1654,9 @@ sub new_item {
     $price_src->price($item->sellprice);
   } else {
     $price_src = $price_source->best_price
-           ? $price_source->best_price
-           : $price_source->price_from_source("");
+               ? $price_source->best_price
+               : $price_source->price_from_source("");
+    $price_src->price($::form->round_amount($price_src->price / $record->exchangerate, 5)) if $record->exchangerate;
     $price_src->price(0) if !$price_source->best_price;
   }
 
@@ -1463,7 +1689,9 @@ sub new_item {
   # saved. Adding empty custom_variables to new orderitem here solves this problem.
   $new_attr{custom_variables} = [];
 
-  $item->assign_attributes(%new_attr);
+  my $texts = get_part_texts($part, $record->language_id, description => $new_attr{description}, longdescription => $new_attr{longdescription});
+
+  $item->assign_attributes(%new_attr, %{ $texts });
 
   return $item;
 }
@@ -1471,17 +1699,43 @@ sub new_item {
 sub setup_order_from_cv {
   my ($order) = @_;
 
-  $order->$_($order->customervendor->$_) for (qw(taxzone_id payment_id delivery_term_id));
+  $order->$_($order->customervendor->$_) for (qw(taxzone_id payment_id delivery_term_id currency_id language_id));
 
   $order->intnotes($order->customervendor->notes);
 
-  if ($order->is_sales) {
-    $order->salesman_id($order->customer->salesman_id || SL::DB::Manager::Employee->current->id);
-    $order->taxincluded(defined($order->customer->taxincluded_checked)
-                        ? $order->customer->taxincluded_checked
-                        : $::myconfig{taxincluded_checked});
-  }
+  return if !$order->is_sales;
 
+  $order->salesman_id($order->customer->salesman_id || SL::DB::Manager::Employee->current->id);
+  $order->taxincluded(defined($order->customer->taxincluded_checked)
+                      ? $order->customer->taxincluded_checked
+                      : $::myconfig{taxincluded_checked});
+
+  my $address = $order->customer->default_billing_address;;
+  $order->billing_address_id($address ? $address->id : undef);
+}
+
+# setup custom shipto from form
+#
+# The dialog returns form variables starting with 'shipto' and cvars starting
+# with 'shiptocvar_'.
+# Mark it to be deleted if a shipto from master data is selected
+# (i.e. order has a shipto).
+# Else, update or create a new custom shipto. If the fields are empty, it
+# will not be saved on save.
+sub setup_custom_shipto_from_form {
+  my ($self, $order, $form) = @_;
+
+  if ($order->shipto) {
+    $self->is_custom_shipto_to_delete(1);
+  } else {
+    my $custom_shipto = $order->custom_shipto || $order->custom_shipto(SL::DB::Shipto->new(module => 'OE', custom_variables => []));
+
+    my $shipto_cvars  = {map { my ($key) = m{^shiptocvar_(.+)}; $key => delete $form->{$_}} grep { m{^shiptocvar_} } keys %$form};
+    my $shipto_attrs  = {map {                                  $_   => delete $form->{$_}} grep { m{^shipto}      } keys %$form};
+
+    $custom_shipto->assign_attributes(%$shipto_attrs);
+    $custom_shipto->cvar_by_name($_)->value($shipto_cvars->{$_}) for keys %$shipto_cvars;
+  }
 }
 
 # recalculate prices and taxes
@@ -1490,20 +1744,16 @@ sub setup_order_from_cv {
 sub recalc {
   my ($self) = @_;
 
-  # bb: todo: currency later
-  $self->order->currency_id($::instance_conf->get_currency_id());
-
   my %pat = $self->order->calculate_prices_and_taxes();
+
   $self->{taxes} = [];
-  foreach my $tax_chart_id (keys %{ $pat{taxes} }) {
-    my $tax = SL::DB::Manager::Tax->find_by(chart_id => $tax_chart_id);
+  foreach my $tax_id (keys %{ $pat{taxes_by_tax_id} }) {
+    my $netamount = sum0 map { $pat{amounts}->{$_}->{amount} } grep { $pat{amounts}->{$_}->{tax_id} == $tax_id } keys %{ $pat{amounts} };
 
-    my @amount_keys = grep { $pat{amounts}->{$_}->{tax_id} == $tax->id } keys %{ $pat{amounts} };
-    push(@{ $self->{taxes} }, { amount    => $pat{taxes}->{$tax_chart_id},
-                                netamount => $pat{amounts}->{$amount_keys[0]}->{amount},
-                                tax       => $tax });
+    push(@{ $self->{taxes} }, { amount    => $pat{taxes_by_tax_id}->{$tax_id},
+                                netamount => $netamount,
+                                tax       => SL::DB::Tax->new(id => $tax_id)->load });
   }
-
   pairwise { $a->{linetotal} = $b->{linetotal} } @{$self->order->items_sorted}, @{$pat{items}};
 }
 
@@ -1539,6 +1789,8 @@ sub delete {
       my $spool = $::lx_office_conf{paths}->{spool};
       unlink map { "$spool/$_" } @spoolfiles if $spool;
 
+      $self->save_history('DELETED');
+
       1;
   }) || push(@{$errors}, $db->error);
 
@@ -1555,12 +1807,19 @@ sub save {
   my $db     = $self->order->db;
 
   $db->with_transaction(sub {
+    # delete custom shipto if it is to be deleted or if it is empty
+    if ($self->order->custom_shipto && ($self->is_custom_shipto_to_delete || $self->order->custom_shipto->is_empty)) {
+      $self->order->custom_shipto->delete if $self->order->custom_shipto->shipto_id;
+      $self->order->custom_shipto(undef);
+    }
+
     SL::DB::OrderItem->new(id => $_)->delete for @{$self->item_ids_to_delete || []};
     $self->order->save(cascade => 1);
 
     # link records
     if ($::form->{converted_from_oe_id}) {
       my @converted_from_oe_ids = split ' ', $::form->{converted_from_oe_id};
+
       foreach my $converted_from_oe_id (@converted_from_oe_ids) {
         my $src = SL::DB::Order->new(id => $converted_from_oe_id)->load;
         $src->update_attributes(closed => 1) if $src->type =~ /_quotation$/;
@@ -1579,11 +1838,64 @@ sub save {
           $idx++;
         }
       }
+
+      $self->link_requirement_specs_linking_to_created_from_objects(@converted_from_oe_ids);
     }
+
+    $self->set_project_in_linked_requirement_specs if $self->order->globalproject_id;
+
+    $self->save_history('SAVED');
+
     1;
   }) || push(@{$errors}, $db->error);
 
   return $errors;
+}
+
+sub workflow_sales_or_request_for_quotation {
+  my ($self) = @_;
+
+  # always save
+  my $errors = $self->save();
+
+  if (scalar @{ $errors }) {
+    $self->js->flash('error', $_) for @{ $errors };
+    return $self->js->render();
+  }
+
+  my $destination_type = $::form->{type} eq sales_order_type() ? sales_quotation_type() : request_quotation_type();
+
+  $self->order(SL::DB::Order->new_from($self->order, destination_type => $destination_type));
+  delete $::form->{id};
+
+  # no linked records from order to quotations
+  delete $::form->{$_} for qw(converted_from_oe_id converted_from_orderitems_ids);
+
+  # set item ids to new fake id, to identify them as new items
+  foreach my $item (@{$self->order->items_sorted}) {
+    $item->{new_fake_id} = join('_', 'new', Time::HiRes::gettimeofday(), int rand 1000000000000);
+  }
+
+  # change form type
+  $::form->{type} = $destination_type;
+  $self->type($self->init_type);
+  $self->cv  ($self->init_cv);
+  $self->check_auth;
+
+  $self->recalc();
+  $self->get_unalterable_data();
+  $self->pre_render();
+
+  # trigger rendering values for second row as hidden, because they
+  # are loaded only on demand. So we need to keep the values from the
+  # source.
+  $_->{render_second_row} = 1 for @{ $self->order->items_sorted };
+
+  $self->render(
+    'order/form',
+    title => $self->get_title_for('edit'),
+    %{$self->{template_args}}
+  );
 }
 
 sub workflow_sales_or_purchase_order {
@@ -1603,12 +1915,29 @@ sub workflow_sales_or_purchase_order {
                        : $::form->{type} eq sales_order_type()       ? purchase_order_type()
                        : '';
 
+  # check for direct delivery
+  # copy shipto in custom shipto (custom shipto will be copied by new_from() in case)
+  my $custom_shipto;
+  if (   $::form->{type} eq sales_order_type() && $destination_type eq purchase_order_type()
+      && $::form->{use_shipto} && $self->order->shipto) {
+    $custom_shipto = $self->order->shipto->clone('SL::DB::Order');
+  }
+
   $self->order(SL::DB::Order->new_from($self->order, destination_type => $destination_type));
   $self->{converted_from_oe_id} = delete $::form->{id};
 
   # set item ids to new fake id, to identify them as new items
   foreach my $item (@{$self->order->items_sorted}) {
     $item->{new_fake_id} = join('_', 'new', Time::HiRes::gettimeofday(), int rand 1000000000000);
+  }
+
+  if ($::form->{type} eq sales_order_type() && $destination_type eq purchase_order_type()) {
+    if ($::form->{use_shipto}) {
+      $self->order->custom_shipto($custom_shipto) if $custom_shipto;
+    } else {
+      # remove any custom shipto if not wanted
+      $self->order->custom_shipto(SL::DB::Shipto->new(module => 'OE', custom_variables => []));
+    }
   }
 
   # change form type
@@ -1621,11 +1950,10 @@ sub workflow_sales_or_purchase_order {
   $self->get_unalterable_data();
   $self->pre_render();
 
-  # trigger rendering values for second row/longdescription as hidden,
-  # because they are loaded only on demand. So we need to keep the values
-  # from the source.
-  $_->{render_second_row}      = 1 for @{ $self->order->items_sorted };
-  $_->{render_longdescription} = 1 for @{ $self->order->items_sorted };
+  # trigger rendering values for second row as hidden, because they
+  # are loaded only on demand. So we need to keep the values from the
+  # source.
+  $_->{render_second_row} = 1 for @{ $self->order->items_sorted };
 
   $self->render(
     'order/form',
@@ -1639,7 +1967,9 @@ sub pre_render {
   my ($self) = @_;
 
   $self->{all_taxzones}               = SL::DB::Manager::TaxZone->get_all_sorted();
+  $self->{all_currencies}             = SL::DB::Manager::Currency->get_all_sorted();
   $self->{all_departments}            = SL::DB::Manager::Department->get_all_sorted();
+  $self->{all_languages}              = SL::DB::Manager::Language->get_all_sorted( query => [ or => [ obsolete => 0, id => $self->order->language_id ] ] );
   $self->{all_employees}              = SL::DB::Manager::Employee->get_all(where => [ or => [ id => $self->order->employee_id,
                                                                                               deleted => 0 ] ],
                                                                            sort_by => 'name');
@@ -1657,8 +1987,6 @@ sub pre_render {
   my $print_form = Form->new('');
   $print_form->{type}        = $self->type;
   $print_form->{printers}    = SL::DB::Manager::Printer->get_all_sorted;
-  $print_form->{languages}   = SL::DB::Manager::Language->get_all_sorted;
-  $print_form->{language_id} = $self->order->language_id;
   $self->{print_options}     = SL::Helper::PrintOptions->get_print_options(
     form => $print_form,
     options => {dialog_name_prefix => 'print_options.',
@@ -1666,7 +1994,7 @@ sub pre_render {
                 no_queue           => 1,
                 no_postscript      => 1,
                 no_opendocument    => 0,
-                no_html            => 1},
+                no_html            => 0},
   );
 
   foreach my $item (@{$self->order->orderitems}) {
@@ -1676,8 +2004,10 @@ sub pre_render {
   }
 
   if (any { $self->type eq $_ } (sales_order_type(), purchase_order_type())) {
-    # calculate shipped qtys here to prevent calling calculate for every item via the items method
-    SL::Helper::ShippedQty->new->calculate($self->order)->write_to_objects;
+    # Calculate shipped qtys here to prevent calling calculate for every item via the items method.
+    # Do not use write_to_objects to prevent order->delivered to be set, because this should be
+    # the value from db, which can be set manually or is set when linked delivery orders are saved.
+    SL::Helper::ShippedQty->new->calculate($self->order)->write_to(\@{$self->order->items});
   }
 
   if ($self->order->number && $::instance_conf->get_webdav) {
@@ -1692,9 +2022,16 @@ sub pre_render {
                                                 } } @all_objects;
   }
 
+  if (   (any { $self->type eq $_ } (sales_quotation_type(), sales_order_type()))
+      && $::instance_conf->get_transport_cost_reminder_article_number_id ) {
+    $self->{template_args}->{transport_cost_reminder_article} = SL::DB::Part->new(id => $::instance_conf->get_transport_cost_reminder_article_number_id)->load;
+  }
+  $self->{template_args}->{longdescription_dialog_size_percentage} = SL::Helper::UserPreferences::DisplayPreferences->new()->get_longdescription_dialog_size_percentage();
+
   $self->get_item_cvpartnumber($_) for @{$self->order->items_sorted};
 
-  $::request->{layout}->use_javascript("${_}.js") for qw(kivi.SalesPurchase kivi.Order kivi.File ckeditor/ckeditor ckeditor/adapters/jquery edit_periodic_invoices_config calculate_qty);
+  $::request->{layout}->use_javascript("${_}.js") for qw(kivi.Validator kivi.SalesPurchase kivi.Order kivi.File ckeditor/ckeditor ckeditor/adapters/jquery
+                                                         edit_periodic_invoices_config calculate_qty follow_up show_history);
   $self->setup_edit_action_bar;
 }
 
@@ -1705,6 +2042,26 @@ sub setup_edit_action_bar {
                       || (($self->type eq sales_order_type())    && $::instance_conf->get_sales_order_show_delete)
                       || (($self->type eq purchase_order_type()) && $::instance_conf->get_purchase_order_show_delete);
 
+  my @req_trans_cost_art = qw(kivi.Order.check_transport_cost_article_presence) x!!$::instance_conf->get_transport_cost_reminder_article_number_id;
+  my @req_cusordnumber   = qw(kivi.Order.check_cusordnumber_presence)           x($self->type eq sales_order_type() && $::instance_conf->get_order_warn_no_cusordnumber);
+
+  my $has_invoice_for_advance_payment;
+  if ($self->order->id && $self->type eq sales_order_type()) {
+    my $lr = $self->order->linked_records(direction => 'to', to => ['Invoice']);
+    $has_invoice_for_advance_payment = any {'SL::DB::Invoice' eq ref $_ && "invoice_for_advance_payment" eq $_->type} @$lr;
+  }
+
+  my $has_final_invoice;
+  if ($self->order->id && $self->type eq sales_order_type()) {
+    my $lr = $self->order->linked_records(direction => 'to', to => ['Invoice']);
+    $has_final_invoice               = any {'SL::DB::Invoice' eq ref $_ && "final_invoice" eq $_->type} @$lr;
+  }
+
+  my $right_for         = { map { $_ => $_.'_edit' } @{$self->valid_types} };
+  my $right             = $right_for->{ $self->type };
+  $right              ||= 'DOES_NOT_EXIST';
+  my $may_edit_create   = $::auth->assert($right, 'may fail');
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       combobox => [
@@ -1712,14 +2069,32 @@ sub setup_edit_action_bar {
           t8('Save'),
           call      => [ 'kivi.Order.save', 'save', $::instance_conf->get_order_warn_duplicate_parts,
                                                     $::instance_conf->get_order_warn_no_deliverydate,
-                                                                                                      ],
-          checks    => [ 'kivi.Order.check_save_active_periodic_invoices' ],
+          ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices', ['kivi.validate_form','#order_form'],
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
+          t8('Save and Close'),
+          call      => [ 'kivi.Order.save', 'save', $::instance_conf->get_order_warn_duplicate_parts,
+                                                    $::instance_conf->get_order_warn_no_deliverydate,
+                                                    1
+          ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices', ['kivi.validate_form','#order_form'],
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('Save as new'),
           call      => [ 'kivi.Order.save', 'save_as_new', $::instance_conf->get_order_warn_duplicate_parts ],
-          checks    => [ 'kivi.Order.check_save_active_periodic_invoices' ],
-          disabled  => !$self->order->id ? t8('This object has not been saved yet.') : undef,
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.')
+                     : !$self->order->id ? t8('This object has not been saved yet.')
+                     :                     undef,
         ],
       ], # end of combobox "Save"
 
@@ -1728,34 +2103,89 @@ sub setup_edit_action_bar {
           t8('Workflow'),
         ],
         action => [
+          t8('Save and Quotation'),
+          submit   => [ '#order_form', { action => "Order/sales_quotation" } ],
+          checks   => [ @req_trans_cost_art, @req_cusordnumber ],
+          only_if  => (any { $self->type eq $_ } (sales_order_type())),
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
+          t8('Save and RFQ'),
+          submit   => [ '#order_form', { action => "Order/request_for_quotation" } ],
+          only_if  => (any { $self->type eq $_ } (purchase_order_type())),
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
           t8('Save and Sales Order'),
           submit   => [ '#order_form', { action => "Order/sales_order" } ],
+          checks   => [ @req_trans_cost_art ],
           only_if  => (any { $self->type eq $_ } (sales_quotation_type(), purchase_order_type())),
-          disabled => !$self->order->id ? t8('This object has not been saved yet.') : undef,
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('Save and Purchase Order'),
-          submit   => [ '#order_form', { action => "Order/purchase_order" } ],
-          only_if  => (any { $self->type eq $_ } (sales_order_type(), request_quotation_type())),
-          disabled => !$self->order->id ? t8('This object has not been saved yet.') : undef,
+          call      => [ 'kivi.Order.purchase_order_check_for_direct_delivery' ],
+          checks    => [ @req_trans_cost_art, @req_cusordnumber ],
+          only_if   => (any { $self->type eq $_ } (sales_order_type(), request_quotation_type())),
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('Save and Delivery Order'),
           call      => [ 'kivi.Order.save', 'save_and_delivery_order', $::instance_conf->get_order_warn_duplicate_parts,
                                                                        $::instance_conf->get_order_warn_no_deliverydate,
                                                                                                                         ],
-          checks    => [ 'kivi.Order.check_save_active_periodic_invoices' ],
-          only_if   => (any { $self->type eq $_ } (sales_order_type(), purchase_order_type()))
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          only_if   => (any { $self->type eq $_ } (sales_order_type(), purchase_order_type())),
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
+          t8('Save and Supplier Delivery Order'),
+          call      => [ 'kivi.Order.save', 'save_and_supplier_delivery_order', $::instance_conf->get_order_warn_duplicate_parts,
+                                                                       $::instance_conf->get_order_warn_no_deliverydate,
+                                                                                                                        ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          only_if   => (any { $self->type eq $_ } (purchase_order_type())),
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('Save and Invoice'),
           call      => [ 'kivi.Order.save', 'save_and_invoice', $::instance_conf->get_order_warn_duplicate_parts ],
-          checks    => [ 'kivi.Order.check_save_active_periodic_invoices' ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
+          ($has_invoice_for_advance_payment ? t8('Save and Further Invoice for Advance Payment') : t8('Save and Invoice for Advance Payment')),
+          call      => [ 'kivi.Order.save', 'save_and_invoice_for_advance_payment', $::instance_conf->get_order_warn_duplicate_parts ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled  => !$may_edit_create  ? t8('You do not have the permissions to access this function.')
+                     : $has_final_invoice ? t8('This order has already a final invoice.')
+                     :                      undef,
+          only_if   => (any { $self->type eq $_ } (sales_order_type())),
+        ],
+        action => [
+          t8('Save and Final Invoice'),
+          call      => [ 'kivi.Order.save', 'save_and_final_invoice', $::instance_conf->get_order_warn_duplicate_parts ],
+          checks    => [ 'kivi.Order.check_save_active_periodic_invoices',
+                         @req_trans_cost_art, @req_cusordnumber,
+          ],
+          disabled  => !$may_edit_create  ? t8('You do not have the permissions to access this function.')
+                     : $has_final_invoice ? t8('This order has already a final invoice.')
+                     :                      undef,
+          only_if   => (any { $self->type eq $_ } (sales_order_type())) && $has_invoice_for_advance_payment,
         ],
         action => [
           t8('Save and AP Transaction'),
           call      => [ 'kivi.Order.save', 'save_and_ap_transaction', $::instance_conf->get_order_warn_duplicate_parts ],
-          only_if   => (any { $self->type eq $_ } (purchase_order_type()))
+          only_if   => (any { $self->type eq $_ } (purchase_order_type())),
+          disabled  => !$may_edit_create  ? t8('You do not have the permissions to access this function.') : undef,
         ],
 
       ], # end of combobox "Workflow"
@@ -1765,12 +2195,30 @@ sub setup_edit_action_bar {
           t8('Export'),
         ],
         action => [
+          t8('Save and preview PDF'),
+          call     => [ 'kivi.Order.save', 'preview_pdf', $::instance_conf->get_order_warn_duplicate_parts,
+                                                          $::instance_conf->get_order_warn_no_deliverydate,
+                      ],
+          checks   => [ @req_trans_cost_art, @req_cusordnumber ],
+          disabled => !$may_edit_create  ? t8('You do not have the permissions to access this function.') : undef,
+        ],
+        action => [
           t8('Save and print'),
-          call => [ 'kivi.Order.show_print_options', $::instance_conf->get_order_warn_duplicate_parts ],
+          call     => [ 'kivi.Order.show_print_options', $::instance_conf->get_order_warn_duplicate_parts,
+                                                         $::instance_conf->get_order_warn_no_deliverydate,
+                      ],
+          checks   => [ @req_trans_cost_art, @req_cusordnumber ],
+          disabled => !$may_edit_create  ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('Save and E-mail'),
-          call => [ 'kivi.Order.email', $::instance_conf->get_order_warn_duplicate_parts ],
+          id       => 'save_and_email_action',
+          call     => [ 'kivi.Order.save', 'save_and_show_email_dialog', $::instance_conf->get_order_warn_duplicate_parts,
+                                                                         $::instance_conf->get_order_warn_no_deliverydate,
+                      ],
+          disabled => !$may_edit_create  ? t8('You do not have the permissions to access this function.')
+                    : !$self->order->id  ? t8('This object has not been saved yet.')
+                    :                      undef,
         ],
         action => [
           t8('Download attachments of all parts'),
@@ -1784,16 +2232,36 @@ sub setup_edit_action_bar {
         t8('Delete'),
         call     => [ 'kivi.Order.delete_order' ],
         confirm  => $::locale->text('Do you really want to delete this object?'),
-        disabled => !$self->order->id ? t8('This object has not been saved yet.') : undef,
+        disabled => !$may_edit_create  ? t8('You do not have the permissions to access this function.')
+                  : !$self->order->id  ? t8('This object has not been saved yet.')
+                  :                      undef,
         only_if  => $deletion_allowed,
       ],
+
+      combobox => [
+        action => [
+          t8('more')
+        ],
+        action => [
+          t8('History'),
+          call     => [ 'set_history_window', $self->order->id, 'id' ],
+          disabled => !$self->order->id ? t8('This record has not been saved yet.') : undef,
+        ],
+        action => [
+          t8('Follow-Up'),
+          call     => [ 'kivi.Order.follow_up_window' ],
+          disabled => !$self->order->id ? t8('This object has not been saved yet.') : undef,
+          only_if  => $::auth->assert('productivity', 1),
+        ],
+      ], # end of combobox "more"
     );
   }
 }
 
-sub generate_pdf {
-  my ($order, $pdf_ref, $params) = @_;
+sub generate_doc {
+  my ($self, $doc_ref, $params) = @_;
 
+  my $order  = $self->order;
   my @errors = ();
 
   my $print_form = Form->new('');
@@ -1802,6 +2270,7 @@ sub generate_pdf {
   $print_form->{format}      = $params->{format}   || 'pdf';
   $print_form->{media}       = $params->{media}    || 'file';
   $print_form->{groupitems}  = $params->{groupitems};
+  $print_form->{printer_id}  = $params->{printer_id};
   $print_form->{media}       = 'file'                             if $print_form->{media} eq 'screen';
 
   $order->language($params->{language});
@@ -1812,6 +2281,9 @@ sub generate_pdf {
   if ($print_form->{format} =~ /(opendocument|oasis)/i) {
     $template_ext  = 'odt';
     $template_type = 'OpenDocument';
+  } elsif ($print_form->{format} =~ m{html}i) {
+    $template_ext  = 'html';
+    $template_type = 'HTML';
   }
 
   # search for the template
@@ -1820,7 +2292,7 @@ sub generate_pdf {
     extension   => $template_ext,
     email       => $print_form->{media} eq 'email',
     language    => $params->{language},
-    printer_id  => $print_form->{printer_id},  # todo
+    printer_id  => $print_form->{printer_id},
   );
 
   if (!defined $template_file) {
@@ -1833,7 +2305,7 @@ sub generate_pdf {
     eval {
       $print_form->prepare_for_printing;
 
-      $$pdf_ref = SL::Helper::CreatePDF->create_pdf(
+      $$doc_ref = SL::Helper::CreatePDF->create_pdf(
         format        => $print_form->{format},
         template_type => $template_type,
         template      => $template_file,
@@ -1842,6 +2314,7 @@ sub generate_pdf {
           longdescription => 'html',
           partnotes       => 'html',
           notes           => 'html',
+          $::form->get_variable_content_types_for_cvars,
         },
       );
       1;
@@ -1862,6 +2335,7 @@ sub get_files_for_email_dialog {
     $files{versions} = [ SL::File->get_all_versions(object_id => $self->order->id,              object_type => $self->order->type, file_type => 'document') ];
     $files{files}    = [ SL::File->get_all(         object_id => $self->order->id,              object_type => $self->order->type, file_type => 'attachment') ];
     $files{vc_files} = [ SL::File->get_all(         object_id => $self->order->{$self->cv}->id, object_type => $self->cv,          file_type => 'attachment') ];
+    $files{project_files} = [ SL::File->get_all(    object_id => $self->order->globalproject_id, object_type => 'project',         file_type => 'attachment') ];
   }
 
   my @parts =
@@ -1932,6 +2406,9 @@ sub get_title_for {
 sub get_item_cvpartnumber {
   my ($self, $item) = @_;
 
+  return if !$self->search_cvpartnumber;
+  return if !$self->order->customervendor;
+
   if ($self->cv eq 'vendor') {
     my @mms = grep { $_->make eq $self->order->customervendor->id } @{$item->part->makemodels};
     $item->{cvpartnumber} = $mms[0]->model if scalar @mms;
@@ -1939,6 +2416,30 @@ sub get_item_cvpartnumber {
     my @cps = grep { $_->customer_id eq $self->order->customervendor->id } @{$item->part->customerprices};
     $item->{cvpartnumber} = $cps[0]->customer_partnumber if scalar @cps;
   }
+}
+
+sub get_part_texts {
+  my ($part_or_id, $language_or_id, %defaults) = @_;
+
+  my $part        = ref($part_or_id)     ? $part_or_id         : SL::DB::Part->load_cached($part_or_id);
+  my $language_id = ref($language_or_id) ? $language_or_id->id : $language_or_id;
+  my $texts       = {
+    description     => $defaults{description}     // $part->description,
+    longdescription => $defaults{longdescription} // $part->notes,
+  };
+
+  return $texts unless $language_id;
+
+  my $translation = SL::DB::Manager::Translation->get_first(
+    where => [
+      parts_id    => $part->id,
+      language_id => $language_id,
+    ]);
+
+  $texts->{description}     = $translation->translation     if $translation && $translation->translation;
+  $texts->{longdescription} = $translation->longdescription if $translation && $translation->longdescription;
+
+  return $texts;
 }
 
 sub sales_order_type {
@@ -1963,6 +2464,109 @@ sub nr_key {
        : $_[0]->type eq sales_quotation_type()   ? 'quonumber'
        : $_[0]->type eq request_quotation_type() ? 'quonumber'
        : '';
+}
+
+sub save_and_redirect_to {
+  my ($self, %params) = @_;
+
+  my $errors = $self->save();
+
+  if (scalar @{ $errors }) {
+    $self->js->flash('error', $_) foreach @{ $errors };
+    return $self->js->render();
+  }
+
+  my $text = $self->type eq sales_order_type()       ? $::locale->text('The order has been saved')
+           : $self->type eq purchase_order_type()    ? $::locale->text('The order has been saved')
+           : $self->type eq sales_quotation_type()   ? $::locale->text('The quotation has been saved')
+           : $self->type eq request_quotation_type() ? $::locale->text('The rfq has been saved')
+           : '';
+  flash_later('info', $text);
+
+  $self->redirect_to(%params, id => $self->order->id);
+}
+
+sub save_history {
+  my ($self, $addition) = @_;
+
+  my $number_type = $self->order->type =~ m{order} ? 'ordnumber' : 'quonumber';
+  my $snumbers    = $number_type . '_' . $self->order->$number_type;
+
+  SL::DB::History->new(
+    trans_id    => $self->order->id,
+    employee_id => SL::DB::Manager::Employee->current->id,
+    what_done   => $self->order->type,
+    snumbers    => $snumbers,
+    addition    => $addition,
+  )->save;
+}
+
+sub store_doc_to_webdav_and_filemanagement {
+  my ($self, $content, $filename, $variant) = @_;
+
+  my $order = $self->order;
+  my @errors;
+
+  # copy file to webdav folder
+  if ($order->number && $::instance_conf->get_webdav_documents) {
+    my $webdav = SL::Webdav->new(
+      type     => $order->type,
+      number   => $order->number,
+    );
+    my $webdav_file = SL::Webdav::File->new(
+      webdav   => $webdav,
+      filename => $filename,
+    );
+    eval {
+      $webdav_file->store(data => \$content);
+      1;
+    } or do {
+      push @errors, t8('Storing the document to the WebDAV folder failed: #1', $@);
+    };
+  }
+  if ($order->id && $::instance_conf->get_doc_storage) {
+    eval {
+      SL::File->save(object_id     => $order->id,
+                     object_type   => $order->type,
+                     mime_type     => SL::MIME->mime_type_from_ext($filename),
+                     source        => 'created',
+                     file_type     => 'document',
+                     file_name     => $filename,
+                     file_contents => $content,
+                     print_variant => $variant);
+      1;
+    } or do {
+      push @errors, t8('Storing the document in the storage backend failed: #1', $@);
+    };
+  }
+
+  return @errors;
+}
+
+sub link_requirement_specs_linking_to_created_from_objects {
+  my ($self, @converted_from_oe_ids) = @_;
+
+  return unless @converted_from_oe_ids;
+
+  my $rs_orders = SL::DB::Manager::RequirementSpecOrder->get_all(where => [ order_id => \@converted_from_oe_ids ]);
+  foreach my $rs_order (@{ $rs_orders }) {
+    SL::DB::RequirementSpecOrder->new(
+      order_id            => $self->order->id,
+      requirement_spec_id => $rs_order->requirement_spec_id,
+      version_id          => $rs_order->version_id,
+    )->save;
+  }
+}
+
+sub set_project_in_linked_requirement_specs {
+  my ($self) = @_;
+
+  my $rs_orders = SL::DB::Manager::RequirementSpecOrder->get_all(where => [ order_id => $self->order->id ]);
+  foreach my $rs_order (@{ $rs_orders }) {
+    next if $rs_order->requirement_spec->project_id == $self->order->globalproject_id;
+
+    $rs_order->requirement_spec->update_attributes(project_id => $self->order->globalproject_id);
+  }
 }
 
 1;
@@ -2060,14 +2664,6 @@ One row for already entered items
 
 Displaying tax information
 
-=item * C<template/webpages/order/tabs/_multi_items_dialog.html>
-
-Dialog for entering more than one item at once
-
-=item * C<template/webpages/order/tabs/_multi_items_result.html>
-
-Results for the filter in the multi items dialog
-
 =item * C<template/webpages/order/tabs/_price_sources_dialog.html>
 
 Dialog for selecting price and discount sources
@@ -2086,34 +2682,22 @@ java script functions
 
 =item * testing
 
-=item * currency
-
-=item * credit limit
-
-=item * more workflows (quotation, rfq)
-
 =item * price sources: little symbols showing better price / better discount
 
 =item * select units in input row?
 
-=item * custom shipto address
-
 =item * check for direct delivery (workflow sales order -> purchase order)
-
-=item * language / part translations
 
 =item * access rights
 
 =item * display weights
-
-=item * history
 
 =item * mtime check
 
 =item * optional client/user behaviour
 
 (transactions has to be set - department has to be set -
- force project if enabled in client config - transport cost reminder)
+ force project if enabled in client config)
 
 =back
 
@@ -2147,11 +2731,6 @@ Sorting does not include C<position>, neither does reordering.
 This behavior was implemented intentionally. But we can discuss, which behavior
 should be implemented.
 
-=item *
-
-C<show_multi_items_dialog> does not use the currently inserted string for
-filtering.
-
 =back
 
 =head1 To discuss / Nice to have
@@ -2162,10 +2741,6 @@ filtering.
 
 How to expand/collapse second row. Now it can be done clicking the icon or
 <shift>-up/down.
-
-=item *
-
-Possibility to change longdescription in input row?
 
 =item *
 

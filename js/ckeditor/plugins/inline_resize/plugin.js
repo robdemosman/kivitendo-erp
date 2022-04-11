@@ -12,8 +12,34 @@
     }
   });
 
+  function parentScroll(e) {
+    var position = e.$.getAttribute("position"),
+        excludeStaticParent = position === "absolute";
+    return e.getParents().filter( function(parent) {
+      var style = window.getComputedStyle(parent.$);
+      if ( excludeStaticParent && style.position === "static" )
+        return false;
+      return (/(auto|scroll)/).test( style['overflow'] + style["overflow-y"] + style["overflow-x"] );
+    });
+  };
+
+  function parentDialog(e) {
+    return e.getParents().filter( function(parent) {
+      return parent.$.classList.contains("ui-dialog-content")
+    })[0];
+  };
+
   function attach( editor ) {
-    var config = editor.config;
+    var config = editor.config,
+        parent = parentScroll(editor.element),
+        divelt = editor.element.getNext(function(elt){return elt.getAttribute("class") === "cke_textarea_inline"}),
+        inline = editor.element.$.classList.contains("texteditor-in-dialog");
+
+    var dialog;
+
+    if (inline) {
+      dialog = parentDialog(divelt);
+    }
 
     var resize = function (width, height) {
       var editable;
@@ -39,12 +65,22 @@
       var viewRect   = win.getViewPaneSize();
 
       float_space.setStyle( 'position', 'absolute' );
-      float_space.setStyle( 'top',    pixelate( editorPos.y + editorRect.height - floatRect.height + 1) );
-      float_space.setStyle( 'right',  pixelate( viewRect.width - editorRect.right ) );
+      if (inline) {
+        var dialogPos = dialog.getDocumentPosition();
+        float_space.setStyle( 'top',  pixelate( editorPos.y - dialogPos.y + editorRect.height - floatRect.height + 1 ) );
+
+        //float_space.setStyle( 'left', pixelate( editorPos.x - dialogPos.x + editorRect.width  - floatRect.width ) );
+        // floatRect.width seems to be far to high on first dialog popup
+        float_space.setStyle( 'left', pixelate( editorPos.x - dialogPos.x + editorRect.width  - 11 ) );
+      } else {
+        float_space.setStyle( 'top',    pixelate( editorPos.y + editorRect.height - floatRect.height + 1) );
+        float_space.setStyle( 'right',  pixelate( viewRect.width - editorRect.right ) );
+      }
     };
 
     var float_html  = '<div class="cke_editor_inline_resize_button">\u25E2</div>'; // class so that csss can overrise content and style
-    var float_space = CKEDITOR.document.getBody().append( CKEDITOR.dom.element.createFromHtml( float_html ));
+    var float_space = inline ? divelt.getParent().append( CKEDITOR.dom.element.createFromHtml( float_html ))
+                             : CKEDITOR.document.getBody().append( CKEDITOR.dom.element.createFromHtml( float_html ));
 
     var drag_handler = function( evt ) {
       var width  = startSize.width  + evt.data.$.screenX - origin.x,
@@ -100,6 +136,10 @@
       layout( evt );
     } );
 
+    parent.forEach(function(e){
+      e.on('scroll', function (evt) { layout(evt) });
+    });
+
     editor.on( 'blur', function() {
       float_space.hide();
     } );
@@ -121,4 +161,5 @@
    * ltr support
    * textarea/div mode safe, currently simply assumes that textarea inline is used
    * positioning of resize handle is not browser zomm safe
+   * positioning of resize handle in dialog with scroll bars is broken
 */

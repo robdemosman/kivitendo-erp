@@ -42,6 +42,7 @@ use SL::Common;
 use SL::CVar;
 use SL::DBUtils;
 use SL::DB;
+use SL::Util qw(trim);
 use Text::ParseWords;
 
 use strict;
@@ -84,6 +85,9 @@ sub search {
       "salesman"           => "e.name",
       "payment"            => "pt.description",
       "pricegroup"         => "pg.pricegroup",
+      "ustid"              => "ct.ustid",
+      "creditlimit"        => "ct.creditlimit",
+      "commercial_court"   => "ct.commercial_court",
     );
 
   $form->{sort} ||= "name";
@@ -98,7 +102,7 @@ sub search {
   }
   my $sortdir   = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
 
-  if ($sortorder !~ /(business|id|discount|itime)/ && !$join_records) {
+  if ($sortorder !~ /(business|creditlimit|id|discount|itime)/ && !$join_records) {
     $sortorder  = "lower($sortorder) ${sortdir}";
   } else {
     $sortorder .= " ${sortdir}";
@@ -236,11 +240,31 @@ sub search {
     push @values, ("%$_%")x2 for @tokens;
   }
 
-  # Nur Kunden finden, bei denen ich selber der Verkäufer bin
-  # Gilt nicht für Lieferanten
-  if ($cv eq 'customer' &&   !$main::auth->assert('customer_vendor_all_edit', 1)) {
-    $where .= qq| AND ct.salesman_id = (select em.id from employee em where em.login = ?)|;
-    push(@values, $::myconfig{login});
+  if (($form->{create_zugferd_invoices} // '') ne '') {
+    $where .= qq| AND (ct.create_zugferd_invoices = ?)|;
+    push @values, $form->{create_zugferd_invoices};
+  }
+
+  if ($form->{all_phonenumbers}) {
+    my $search_term = trim($form->{all_phonenumbers});
+    $search_term    =~ s{\p{WSpace}+}{}g;
+    $search_term    = join ' *', split(//, $search_term);
+
+    $where .= qq| AND (ct.phone ~* ? OR
+                       ct.fax   ~* ? OR
+                       ct.id    IN
+                         (SELECT cp_cv_id FROM contacts
+                          WHERE cp_phone1      ~* ? OR
+                                cp_phone2      ~* ? OR
+                                cp_fax         ~* ? OR
+                                cp_mobile1     ~* ? OR
+                                cp_mobile2     ~* ? OR
+                                cp_satphone    ~* ? OR
+                                cp_satfax      ~* ? OR
+                                cp_privatphone ~* ?
+                         )
+    )|;
+    push @values, ($search_term)x10;
   }
 
   my ($cvar_where, @cvar_values) = CVar->build_filter_query('module'         => 'CT',
@@ -288,6 +312,7 @@ sub search {
         qq|SELECT ct.*, ct.itime::DATE AS insertdate, b.description AS business, e.name as salesman, | .
         qq|  pt.description as payment | .
         $pg_select .
+        $main_cp_select .
         qq|, a.invnumber, a.ordnumber, a.quonumber, a.id AS invid, | .
         qq|  '$module' AS module, 'invoice' AS formtype, | .
         qq|  (a.amount = a.paid) AS closed | .
@@ -307,6 +332,7 @@ sub search {
         qq|SELECT ct.*, ct.itime::DATE AS insertdate, b.description AS business, e.name as salesman, | .
         qq|  pt.description as payment | .
         $pg_select .
+        $main_cp_select .
         qq|, ' ' AS invnumber, o.ordnumber, o.quonumber, o.id AS invid, | .
         qq|  'oe' AS module, 'order' AS formtype, o.closed | .
         qq|FROM $cv ct | .
@@ -325,6 +351,7 @@ sub search {
         qq|SELECT ct.*, ct.itime::DATE AS insertdate, b.description AS business, e.name as salesman, | .
         qq|  pt.description as payment | .
         $pg_select .
+        $main_cp_select .
         qq|, ' ' AS invnumber, o.ordnumber, o.quonumber, o.id AS invid, | .
         qq|  'oe' AS module, 'quotation' AS formtype, o.closed | .
         qq|FROM $cv ct | .

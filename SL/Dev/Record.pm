@@ -20,6 +20,7 @@ our %EXPORT_TAGS = (ALL => \@EXPORT_OK);
 
 use SL::DB::Invoice;
 use SL::DB::InvoiceItem;
+use SL::DB::DeliveryOrder::TypeData qw(:types);
 use SL::DB::Employee;
 use SL::Dev::Part qw(new_part);
 use SL::Dev::CustomerVendor qw(new_vendor new_customer);
@@ -116,7 +117,7 @@ sub create_sales_delivery_order {
   die "illegal customer" unless ref($customer) eq 'SL::DB::Customer';
 
   my $delivery_order = SL::DB::DeliveryOrder->new(
-    'is_sales'   => 'true',
+    order_type   => SALES_DELIVERY_ORDER_TYPE,
     'closed'     => undef,
     customer_id  => $customer->id,
     taxzone_id   => $customer->taxzone_id,
@@ -144,7 +145,7 @@ sub create_purchase_delivery_order {
   die "illegal customer" unless ref($vendor) eq 'SL::DB::Vendor';
 
   my $delivery_order = SL::DB::DeliveryOrder->new(
-    'is_sales'   => 'false',
+    order_type   => PURCHASE_DELIVERY_ORDER_TYPE,
     'closed'     => undef,
     vendor_id    => $vendor->id,
     taxzone_id   => $vendor->taxzone_id,
@@ -359,8 +360,12 @@ sub create_ap_transaction {
 
   my $dec = delete $params{dec} // 2;
 
-  my $transdate  = delete $params{transdate} // DateTime->today;
+  my $today      = DateTime->today_local;
+  my $transdate  = delete $params{transdate} // $today;
   die "transdate hat to be DateTime object" unless ref($transdate) eq 'DateTime';
+
+  my $gldate     = delete $params{gldate} // $today;
+  die "gldate hat to be DateTime object" unless ref($gldate) eq 'DateTime';
 
   my $ap_chart = delete $params{ap_chart} // SL::DB::Manager::Chart->find_by( accno => '1600' );
   die "no ap_chart found or not an AP chart" unless $ap_chart and $ap_chart->link eq 'AP';
@@ -373,13 +378,15 @@ sub create_ap_transaction {
     invnumber        => delete $params{invnumber} // 'test ap_transaction',
     notes            => delete $params{notes}     // 'test ap_transaction',
     transdate        => $transdate,
+    gldate           => $gldate,
     taxincluded      => $taxincluded,
     taxzone_id       => $vendor->taxzone_id, # taxzone_id shouldn't have any effect on ap transactions
     currency_id      => $::instance_conf->get_currency_id,
     type             => undef, # isn't set for ap
     employee_id      => SL::DB::Manager::Employee->current->id,
   );
-  # $ap_transaction->assign_attributes(%params) if %params;
+  # assign any parameters that weren't explicitly handled above, e.g. itime
+  $ap_transaction->assign_attributes(%params) if %params;
 
   foreach my $booking ( @{$bookings} ) {
     my $chart = delete $booking->{chart};
@@ -474,8 +481,12 @@ sub create_ar_transaction {
 
   my $dec = delete $params{dec} // 2;
 
-  my $transdate  = delete $params{transdate} // DateTime->today;
+  my $today      = DateTime->today_local;
+  my $transdate  = delete $params{transdate} // $today;
   die "transdate hat to be DateTime object" unless ref($transdate) eq 'DateTime';
+
+  my $gldate     = delete $params{gldate} // $today;
+  die "gldate hat to be DateTime object" unless ref($gldate) eq 'DateTime';
 
   my $ar_chart = delete $params{ar_chart} // SL::DB::Manager::Chart->find_by( accno => '1400' );
   die "no ar_chart found or not an AR chart" unless $ar_chart and $ar_chart->link eq 'AR';
@@ -488,13 +499,15 @@ sub create_ar_transaction {
     invnumber        => delete $params{invnumber} // 'test ar_transaction',
     notes            => delete $params{notes}     // 'test ar_transaction',
     transdate        => $transdate,
+    gldate           => $gldate,
     taxincluded      => $taxincluded,
     taxzone_id       => $customer->taxzone_id, # taxzone_id shouldn't have any effect on ar transactions
     currency_id      => $::instance_conf->get_currency_id,
     type             => undef, # isn't set for ar
     employee_id      => SL::DB::Manager::Employee->current->id,
   );
-  # $ar_transaction->assign_attributes(%params) if %params;
+  # assign any parameters that weren't explicitly handled above, e.g. itime
+  $ar_transaction->assign_attributes(%params) if %params;
 
   foreach my $booking ( @{$bookings} ) {
     my $chart = delete $booking->{chart};
@@ -555,6 +568,7 @@ sub create_gl_transaction {
 
   my $today      = DateTime->today_local;
   my $transdate  = delete $params{transdate} // $today;
+  my $gldate     = delete $params{gldate}    // $today;
 
   my $reference   = delete $params{reference}   // 'reference';
   my $description = delete $params{description} // 'description';
@@ -590,7 +604,7 @@ sub create_gl_transaction {
     reference      => $reference,
     description    => $description,
     transdate      => $transdate,
-    gldate         => $today,
+    gldate         => $gldate,
     taxincluded    => $taxincluded,
     type           => undef,
     ob_transaction => $ob_transaction,
@@ -599,6 +613,8 @@ sub create_gl_transaction {
     storno_id      => undef,
     transactions   => [],
   );
+  # assign any parameters that weren't explicitly handled above, e.g. itime
+  $gl_transaction->assign_attributes(%params) if %params;
 
   my @acc_trans;
   if ( scalar @{$bookings} ) {

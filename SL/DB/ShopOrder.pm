@@ -9,6 +9,7 @@ use SL::DBUtils;
 use SL::DB::Shop;
 use SL::DB::MetaSetup::ShopOrder;
 use SL::DB::Manager::ShopOrder;
+use SL::DB::PaymentTerm;
 use SL::DB::Helper::LinkedRecords;
 use SL::Locale::String qw(t8);
 use Carp;
@@ -26,8 +27,9 @@ __PACKAGE__->meta->initialize;
 sub convert_to_sales_order {
   my ($self, %params) = @_;
 
-  my $customer = delete $params{customer};
-  my $employee = delete $params{employee};
+  my $customer  = delete $params{customer};
+  my $employee  = delete $params{employee};
+  my $transdate = delete $params{transdate} // DateTime->today_local;
   croak "param customer is missing" unless ref($customer) eq 'SL::DB::Customer';
   croak "param employee is missing" unless ref($employee) eq 'SL::DB::Employee';
 
@@ -46,7 +48,8 @@ sub convert_to_sales_order {
     }else{
       my $current_order_item = SL::DB::OrderItem->new(
         parts_id            => $part->id,
-        description         => $part->description,
+        description         => $_->description, # description from the shop
+        longdescription     => $part->notes,    # longdescription from parts. TODO locales
         qty                 => $_->quantity,
         sellprice           => $_->price,
         unit                => $part->unit,
@@ -94,11 +97,11 @@ sub convert_to_sales_order {
       intnotes                => $customer->notes,
       salesman_id             => $employee->id,
       taxincluded             => $self->tax_included,
-      payment_id              => $customer->payment_id,
+      payment_id              => $self->payment_id,
       taxzone_id              => $customer->taxzone_id,
       currency_id             => $customer->currency_id,
       transaction_description => $shop->transaction_description,
-      transdate               => DateTime->today_local
+      transdate               => $transdate,
     );
      return $order;
    }else{
@@ -121,7 +124,7 @@ sub check_for_existing_customers {
   my $zipcode          = $self->billing_street   ne '' ?  $self->billing_zipcode                                  : '';
   my $email            = $self->billing_street   ne '' ?  $self->billing_email                                    : '';
 
-  if($self->check_trgm) {
+  if(check_trgm($::form->get_standard_dbh())) {
     # Fuzzysearch for street to find e.g. "Dorfstrasse - Dorfstr. - Dorfstraße"
     my $fs_query = <<SQL;
 SELECT *
@@ -170,12 +173,24 @@ SQL
   return $customers;
 }
 
+sub check_for_open_invoices {
+  my ($self) = @_;
+    my $open_invoices = SL::DB::Manager::Invoice->get_all_count(
+      query => [customer_id => $self->{kivi_customer_id},
+              paid => {lt_sql => 'amount'},
+      ],
+    );
+  return $open_invoices;
+}
+
 sub get_customer{
   my ($self, %params) = @_;
   my $shop = SL::DB::Manager::Shop->find_by(id => $self->shop_id);
   my $customer_proposals = $self->check_for_existing_customers;
   my $name = $self->billing_firstname . " " . $self->billing_lastname;
   my $customer = 0;
+  my $default_payment    = SL::DB::Manager::PaymentTerm->get_first();
+  my $payment_id = $default_payment ? $default_payment->id : undef;
   if(!scalar(@{$customer_proposals})){
     my %address = ( 'name'                  => $name,
                     'department_1'          => $self->billing_company,
@@ -194,7 +209,7 @@ sub get_customer{
                     'pricegroup_id'         => (split '\/',$shop->price_source)[0] eq "pricegroup" ?  (split '\/',$shop->price_source)[1] : undef,
                     'taxzone_id'            => $shop->taxzone_id,
                     'currency'              => $::instance_conf->get_currency_id,
-                    #'payment_id'            => 7345,# TODO hardcoded
+                    'payment_id'            => $payment_id,
                   );
     $customer = SL::DB::Customer->new(%address);
 
@@ -232,17 +247,6 @@ sub compare_to {
   my $result = 0;
   $result    = $self->transfer_date <=> $other->transfer_date if $self->transfer_date;
   return $result || ($self->id <=> $other->id);
-}
-
-sub check_trgm {
-  my ( $self ) = @_;
-
-  my $dbh     = $::form->get_standard_dbh();
-  my $sql     = "SELECT installed_version FROM pg_available_extensions WHERE name = 'pg_trgm'";
-  my @version = selectall_hashref_query($::form, $dbh, $sql);
-
-  return 1 if($version[0]->{installed_version});
-  return 0;
 }
 
 sub has_differing_delivery_address {
@@ -292,10 +296,6 @@ returns only one customer from the check_for_existing_customers if the return fr
 When it is 0 get customer creates a new customer object of the shop order billing data and returns it
 
 =item C<compare_to>
-
-=item C<check_trgm>
-
-Checks if the postgresextension pg_trgm is installed and return 0 or 1.
 
 =back
 

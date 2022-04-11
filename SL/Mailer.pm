@@ -29,11 +29,13 @@ use Encode;
 use File::MimeInfo::Magic;
 use File::Slurp;
 use List::UtilsBy qw(bundle_by);
+use List::Util qw(sum);
 
 use SL::Common;
 use SL::DB::EmailJournal;
 use SL::DB::EmailJournalAttachment;
 use SL::DB::Employee;
+use SL::Locale::String qw(t8);
 use SL::Template;
 use SL::Version;
 
@@ -57,6 +59,7 @@ my %type_to_table = (
   letter                  => 'letter',
   purchase_delivery_order => 'delivery_orders',
   sales_delivery_order    => 'delivery_orders',
+  dunning                 => 'dunning',
 );
 
 sub new {
@@ -120,8 +123,21 @@ sub _create_address_headers {
     next if !$self->{$item};
 
     my @header_addresses;
+    my @addresses = Email::Address->parse($self->{$item});
 
-    foreach my $addr_obj (Email::Address->parse($self->{$item})) {
+    # if either no address was parsed or
+    # there are more than 3 characters per parsed email extra, assume the the user has entered bunk
+    if (!@addresses) {
+       die t8('"#1" seems to be a faulty list of email addresses. No addresses could be extracted.',
+         $self->{$item},
+       );
+    } elsif ((length($self->{$item}) - sum map { length $_->original } @addresses) / @addresses > 3) {
+       die t8('"#1" seems to be a faulty list of email addresses. After extracing addresses (#2) too many characters are left.',
+         $self->{$item}, join ', ', map { $_->original } @addresses,
+       );
+    }
+
+    foreach my $addr_obj (@addresses) {
       push @{ $self->{addresses}->{$item} }, $addr_obj->address;
       next if $self->{driver}->keep_from_header($item);
 
@@ -151,8 +167,6 @@ sub _create_attachment_part {
   my $file_id       = 0;
   my $email_journal = $::instance_conf->get_email_journal;
 
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail5 att=" . $attachment . " email_journal=" . $email_journal . " id=" . $attachment->{id});
-
   if (ref($attachment) eq "HASH") {
     $attributes{filename}     = $attachment->{name};
     $file_id                  = $attachment->{id}   || '0';
@@ -176,8 +190,6 @@ sub _create_attachment_part {
 
   $attachment_content ||= ' ';
   $attributes{charset}  = $self->{charset} if $self->{charset} && ($attributes{content_type} =~ m{^text/});
-
-  $::lxdebug->message(LXDebug->DEBUG2(), "mail6 mtype=" . $attributes{content_type} . " filename=" . $attributes{filename});
 
   my $ent;
   if ( $attributes{content_type} eq 'message/rfc822' ) {
@@ -210,8 +222,6 @@ sub _create_message {
   my ($self) = @_;
 
   my @parts;
-
-  push @{ $self->{headers} }, (Type => "multipart/mixed");
 
   if ($self->{message}) {
     push @parts, Email::MIME->create(
@@ -252,13 +262,13 @@ sub send {
   # Set defaults & headers
   $self->{charset}        =  'UTF-8';
   $self->{content_type} ||=  "text/plain";
-  $self->{headers}        =  [
+  $self->{headers}      ||=  [];
+  push @{ $self->{headers} }, (
     Subject               => $self->{subject},
     'Message-ID'          => '<' . $self->_create_message_id . '>',
     'X-Mailer'            => "kivitendo " . SL::Version->get_version,
-  ];
+  );
   $self->{mail_attachments} = [];
-  $self->{content_by_name}  = $::instance_conf->get_email_journal == 1 && $::instance_conf->get_doc_files;
 
   my $error;
   my $ok = eval {
@@ -268,10 +278,6 @@ sub send {
 
     my $email = $self->_create_message;
 
-    #$::lxdebug->message(0, "message: " . $email->as_string);
-    # return "boom";
-
-    $::lxdebug->message(LXDebug->DEBUG2(), "mail1 from=".$self->{from}." to=".$self->{to});
     my $from_obj = (Email::Address->parse($self->{from}))[0];
 
     $self->{driver}->start_mail(from => $from_obj->address, to => [ $self->_all_recipients ]);
@@ -431,6 +437,9 @@ Mail can be sent from kivitendo via the sendmail command or the smtp protocol.
 
   If $self->{journalentry} and either $self->{record_id} or $::form->{id} (checked in
   this order) exist a record link from record to email journal is created.
+  It is possible to provide an array reference with more than one id in
+  $self->{record_id} or $::form->{id}. In this case all records are linked to
+  the mail.
   Will fail silently if record_link creation wasn't successful (same behaviour as
   _store_in_journal).
 

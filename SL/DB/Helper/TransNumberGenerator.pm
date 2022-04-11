@@ -30,6 +30,8 @@ my %specs = ( ar                      => { number_column => 'invnumber',        
               purchase_order          => { number_column => 'ordnumber',      number_range_column => 'ponumber',       scoping => \&oe_scoping,    },
               sales_delivery_order    => { number_column => 'donumber',       number_range_column => 'sdonumber',      scoping => \&do_scoping,    },
               purchase_delivery_order => { number_column => 'donumber',       number_range_column => 'pdonumber',      scoping => \&do_scoping,    },
+              supplier_delivery_order => { number_column => 'donumber',       number_range_column => 'sudonumber',     scoping => \&do_scoping,    },
+              rma_delivery_order      => { number_column => 'donumber',       number_range_column => 'rdonumber',      scoping => \&do_scoping,    },
               customer                => { number_column => 'customernumber', number_range_column => 'customernumber',                             },
               vendor                  => { number_column => 'vendornumber',   number_range_column => 'vendornumber',                               },
               part                    => { number_column => 'partnumber',     number_range_column => 'articlenumber',  scoping => \&parts_scoping, },
@@ -98,7 +100,7 @@ sub get_next_trans_number {
   my $range_table    = ($business ? $business : SL::DB::Default->get)->load(for_update => 1);
 
   my $start_number   = $range_table->$number_range_column;
-  $start_number      = $range_table->articlenumber if ($number_range_column =~ /^(assemblynumber|assortmentnumber)$/) && (length($start_number) < 1);
+  $start_number      = $range_table->articlenumber if ($number_range_column =~ /^(assemblynumber|assortmentnumber)$/) && (length($start_number)//0 < 1);
   my $sequence       = SL::PrefixedNumber->new(number => $start_number // 0);
 
   if (!$fill_holes_in_range) {

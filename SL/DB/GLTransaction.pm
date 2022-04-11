@@ -2,6 +2,7 @@ package SL::DB::GLTransaction;
 
 use strict;
 
+use SL::DB::Helper::LinkedRecords;
 use SL::DB::MetaSetup::GLTransaction;
 use SL::Locale::String qw(t8);
 use List::Util qw(sum);
@@ -113,7 +114,7 @@ sub add_chart_booking {
   require SL::DB::Chart;
   die "add_chart_booking needs a transdate" unless $self->transdate;
   die "add_chart_booking needs taxincluded" unless defined $self->taxincluded;
-  die "chart missing"  unless $params{chart} && ref($params{chart}) eq 'SL::DB::Chart';
+  die "chart missing" unless $params{chart} && ref($params{chart}) eq 'SL::DB::Chart';
   die t8('Booking needs at least one debit and one credit booking!')
     unless $params{debit} or $params{credit}; # must exist and not be 0
   die t8('Cannot have a value in both Debit and Credit!')
@@ -129,8 +130,15 @@ sub add_chart_booking {
   croak t8('You cannot use a negative amount with debit/credit!') if $amount < 0;
 
   require SL::DB::Tax;
-  my $tax = SL::DB::Manager::Tax->find_by(id => $params{tax_id})
-    // croak "Can't find tax with id " . $params{tax_id};
+
+  my $ct        = $chart->get_active_taxkey($self->deliverydate // $self->transdate);
+  my $chart_tax = ref $ct eq 'SL::DB::TaxKey' ? $ct->tax : undef;
+
+  my $tax = defined($params{tax_id})        ? SL::DB::Manager::Tax->find_by(id => $params{tax_id}) # 1. user param
+          : ref $chart_tax eq 'SL::DB::Tax' ? $chart_tax                                           # automatic tax
+          : SL::DB::Manager::Tax->find_by(taxkey => 0, rate => 0.00);                              # no tax
+
+  die "No valid tax found. User input:" . $params{tax_id} unless ref $tax eq 'SL::DB::Tax';
 
   if ( $tax and $tax->rate != 0 ) {
     ($netamount, $taxamount) = Form->calculate_tax($amount, $tax->rate, $self->taxincluded, $dec);
@@ -205,7 +213,7 @@ sub validate {
       my $sum = sum map { $_->amount } @{ $self->transactions };
       # compare rounded amount to 0, to get around floating point problems, e.g.
       # $sum = -2.77555756156289e-17
-      push @errors, t8('Out of balance transaction!') unless $::form->round_amount($sum,5) == 0;
+      push @errors, t8('Out of balance transaction!') . $sum unless $::form->round_amount($sum,5) == 0;
     };
   } else {
     push @errors, t8('Empty transaction!');
@@ -283,14 +291,15 @@ Example of posting a GL transaction from scratch:
 Adds an acc_trans entry to an existing GL transaction, depending on the tax it
 will also automatically create the tax entry. The GL transaction already needs
 to have certain values, e.g. transdate, taxincluded, ...
+Tax can be either set via the param tax_id or it will be set automatically
+depending on the chart configuration. If not set and no configuration is found
+no tax entry will be created (taxkey 0).
 
 Mandatory params are
 
 =over 2
 
 =item * chart as an RDBO object
-
-=item * tax_id
 
 =item * either debit OR credit (positive values)
 

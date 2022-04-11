@@ -2,6 +2,7 @@ package SL::DB::Customer;
 
 use strict;
 
+use List::Util qw(first);
 use Rose::DB::Object::Helpers qw(as_tree);
 
 use SL::Locale::String qw(t8);
@@ -10,6 +11,7 @@ use SL::DB::MetaSetup::Customer;
 use SL::DB::Manager::Customer;
 use SL::DB::Helper::IBANValidation;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::VATIDNrValidation;
 use SL::DB::Helper::CustomVariables (
   module      => 'CT',
   cvars_alias => 1,
@@ -28,6 +30,12 @@ use SL::DB::Helper::DisplayableNamePreferences (
 use SL::DB::VC;
 
 __PACKAGE__->meta->add_relationship(
+  additional_billing_addresses => {
+    type         => 'one to many',
+    class        => 'SL::DB::AdditionalBillingAddress',
+    column_map   => { id      => 'customer_id' },
+    manager_args => { sort_by => 'lower(additional_billing_addresses.name)' },
+  },
   shipto => {
     type         => 'one to many',
     class        => 'SL::DB::Shipto',
@@ -61,6 +69,7 @@ sub validate {
   my @errors;
   push @errors, $::locale->text('The customer name is missing.') if !$self->name;
   push @errors, $self->validate_ibans;
+  push @errors, $self->validate_vat_id_numbers;
 
   return @errors;
 }
@@ -97,5 +106,20 @@ sub is_customer { 1 };
 sub is_vendor   { 0 };
 sub payment_terms { goto &payment }
 sub number { goto &customernumber }
+
+sub create_zugferd_invoices_for_this_customer {
+  my ($self) = @_;
+
+  no warnings 'once';
+  return $::instance_conf->get_create_zugferd_invoices if $self->create_zugferd_invoices == -1;
+  return $self->create_zugferd_invoices;
+}
+
+sub default_billing_address {
+  my $self = shift;
+
+  die 'not an accessor' if @_ > 1;
+  return first { $_->default_address } @{ $self->additional_billing_addresses };
+}
 
 1;

@@ -832,14 +832,16 @@ sub trial_balance {
   if ($form->{fromdate} || $form->{todate}) {
     if ($form->{fromdate}) {
       $fromdate = conv_dateq($form->{fromdate});
+      my $fiscal_year_startdate = conv_dateq($self->get_balance_starting_date($form->{fromdate}));
+      # my $date_trunc = "(select date_trunc('year', date $fromdate))";
       $tofrom        .= " AND (ac.transdate >= $fromdate)";
       $subwhere      .= " AND (ac.transdate >= $fromdate)";
-      $sumsubwhere   .= " AND (ac.transdate >= (select date_trunc('year', date $fromdate))) ";
-      $saldosubwhere .= " AND (ac,transdate>=(select date_trunc('year', date $fromdate)))  ";
-      $invwhere      .= " AND (a.transdate >= $fromdate)";
-      $glsaldowhere  .= " AND ac.transdate>=(select date_trunc('year', date $fromdate)) ";
+      $sumsubwhere   .= " AND (ac.transdate >= $fiscal_year_startdate) ";
+      $saldosubwhere .= " AND (ac.transdate >= $fiscal_year_startdate) ";
+      $invwhere      .= " AND (a.transdate  >= $fromdate)";
+      $glsaldowhere  .= " AND (ac.transdate >= $fiscal_year_startdate) ";
       $glwhere        = " AND (ac.transdate >= $fromdate)";
-      $glsumwhere     = " AND (ac.transdate >= (select date_trunc('year', date $fromdate))) ";
+      $glsumwhere     = " AND (ac.transdate >= $fiscal_year_startdate) ";
     }
     if ($form->{todate}) {
       $todate = conv_dateq($form->{todate});
@@ -1097,7 +1099,7 @@ sub trial_balance {
   }
 
 
-  my ($debit, $credit, $saldo, $soll_saldo, $haben_saldo,$soll_kummuliert, $haben_kummuliert, $last_transaction);
+  my ($debit, $credit, $saldo, $soll_saldo, $haben_saldo, $soll_kumuliert, $haben_kumuliert, $last_transaction);
 
   foreach my $accno (sort keys %trb) {
     $ref = {};
@@ -1294,9 +1296,9 @@ sub aging {
     SELECT ${ct}.id AS ctid, ${ct}.name,
       street, zipcode, city, country, contact, email,
       phone as customerphone, fax as customerfax, ${ct}number,
-      "invnumber", "transdate",
+      "invnumber", "transdate", "type",
       (amount - COALESCE((SELECT sum(amount)*$ml FROM acc_trans WHERE chart_link ilike '%paid%' AND acc_trans.trans_id=${arap}.id AND acc_trans.transdate <= (date $todate)),0)) as "open", "amount",
-      "duedate", invoice, ${arap}.id, date_part('days', now() - duedate) as overduedays,
+      "duedate", invoice, ${arap}.id, date_part('days', now() - duedate) as overduedays, datepaid, (amount - paid) as current_open,
       (SELECT $buysell
        FROM exchangerate
        WHERE (${arap}.currency_id = exchangerate.currency_id)

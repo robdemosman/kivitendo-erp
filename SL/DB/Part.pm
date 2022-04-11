@@ -4,6 +4,7 @@ use strict;
 
 use Carp;
 use List::MoreUtils qw(any uniq);
+use List::Util qw(sum);
 use Rose::DB::Object::Helpers qw(as_tree);
 
 use SL::Locale::String qw(t8);
@@ -26,13 +27,12 @@ use SL::DB::Helper::DisplayableNamePreferences (
                {name => 'ean',         title => t8('EAN')            }, ],
 );
 
-use List::Util qw(sum);
 
 __PACKAGE__->meta->add_relationships(
   assemblies                     => {
     type         => 'one to many',
     class        => 'SL::DB::Assembly',
-    manager_args => { sort_by => 'position, oid' },
+    manager_args => { sort_by => 'position' },
     column_map   => { id => 'id' },
   },
   prices         => {
@@ -61,6 +61,7 @@ __PACKAGE__->meta->add_relationships(
     type         => 'one to many',
     class        => 'SL::DB::AssortmentItem',
     column_map   => { id => 'assortment_id' },
+    manager_args => { sort_by => 'position' },
   },
   history_entries   => {
     type            => 'one to many',
@@ -75,19 +76,37 @@ __PACKAGE__->meta->add_relationships(
     column_map   => { id => 'part_id' },
     manager_args => { with_objects => [ 'shop' ] },
   },
+  last_price_update => {
+    type         => 'one to one',
+    class        => 'SL::DB::PartsPriceHistory',
+    column_map   => { id => 'part_id' },
+    manager_args => { sort_by => 'valid_from DESC', limit => 1 },
+  },
 );
 
 __PACKAGE__->meta->initialize;
 
 __PACKAGE__->attr_html('notes');
-__PACKAGE__->attr_sorted({ unsorted => 'makemodels', position => 'sortorder' });
+__PACKAGE__->attr_sorted({ unsorted => 'makemodels',     position => 'sortorder' });
+__PACKAGE__->attr_sorted({ unsorted => 'customerprices', position => 'sortorder' });
 
 __PACKAGE__->before_save('_before_save_set_partnumber');
+__PACKAGE__->before_save('_before_save_set_assembly_weight');
 
 sub _before_save_set_partnumber {
   my ($self) = @_;
 
   $self->create_trans_number if !$self->partnumber;
+  return 1;
+}
+
+sub _before_save_set_assembly_weight {
+  my ($self) = @_;
+
+  if ( $self->part_type eq 'assembly' ) {
+    my $weight_sum = $self->items_weight_sum;
+    $self->weight($self->items_weight_sum) if $weight_sum;
+  }
   return 1;
 }
 
@@ -119,6 +138,13 @@ sub validate {
   push @errors, $::locale->text('The partnumber is missing.')     if $self->id and !$self->partnumber;
   push @errors, $::locale->text('The unit is missing.')           unless $self->unit;
   push @errors, $::locale->text('The buchungsgruppe is missing.') unless $self->buchungsgruppen_id or $self->buchungsgruppe;
+
+  if ( $::instance_conf->get_partsgroup_required
+       && ( !$self->partsgroup_id or ( $self->id && !$self->partsgroup_id && $self->partsgroup ) ) ) {
+    # when unsetting an existing partsgroup in the interface, $self->partsgroup_id will be undef but $self->partsgroup will still have a value
+    # this needs to be checked, as partsgroup dropdown has an empty value
+    push @errors, $::locale->text('The partsgroup is missing.');
+  }
 
   unless ( $self->id ) {
     push @errors, $::locale->text('The partnumber already exists.') if SL::DB::Manager::Part->get_all_count(where => [ partnumber => $self->partnumber ]);
@@ -417,7 +443,7 @@ select unnest(ids)
 SQL
 
   my $objs  = SL::DB::Manager::Inventory->get_all(
-    query        => [ id => [ \"$query" ] ],
+    query        => [ id => [ \"$query" ] ],                           # make emacs happy "
     with_objects => [ 'parts', 'trans_type', 'bin', 'bin.warehouse' ], # prevent lazy loading in template
     sort_by      => 'itime DESC',
   );
@@ -509,6 +535,14 @@ sub items_lastcost_sum {
   return unless $self->is_assortment or $self->is_assembly;
   return unless $self->items;
   sum map { $_->linetotal_lastcost } @{$self->items};
+};
+
+sub items_weight_sum {
+  my ($self) = @_;
+
+  return unless $self->is_assembly;
+  return unless $self->items;
+  sum map { $_->linetotal_weight} @{$self->items};
 };
 
 1;

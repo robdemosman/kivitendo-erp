@@ -11,6 +11,7 @@ use SL::DB::Chart;
 use SL::Helper::DateTime;
 use SL::Locale::String qw(t8);
 use SL::Util qw(trim);
+use SL::VATIDNr;
 
 use Rose::Object::MakeMethods::Generic (
   scalar => [ qw(datev_lines from to locked warnings) ],
@@ -134,6 +135,7 @@ my @kivitendo_to_datev = (
                                                        my ($text) = @_; check_encoding($text); },
                               valid_check     => sub { return 1 if     $::instance_conf->get_datev_export_format eq 'cp1252';
                                                        my ($text) = @_; check_encoding($text); },
+                              formatter       => sub { my ($input) = @_; return substr($input, 0, 60) },
                             },  # pos 14
                             {
                               kivi_datev_name => 'not yet implemented',
@@ -239,16 +241,267 @@ my @kivitendo_to_datev = (
                               input_check     => sub {
                                                        my ($ustid) = @_;
                                                        return 1 if ('' eq $ustid);
-                                                       $ustid =~ s{\s+}{}g;
-                                                       return ($ustid =~ m/^CH|^[A-Z]{2}\w{5,13}$/);
+                                                       return SL::VATIDNr->validate($ustid);
                                                      },
                               formatter       => sub { my ($input) = @_; $input =~ s/\s//g; return $input },
                               valid_check     => sub {
                                                        my ($ustid) = @_;
                                                        return 1 if ('' eq $ustid);
-                                                       return ($ustid =~ m/^CH|^[A-Z]{2}\w{5,13}$/);
+                                                       return SL::VATIDNr->validate($ustid);
                                                      },
                             }, # pos 40
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 50
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 60
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 70
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 80
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 90
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 100
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 110
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'locked',
+                              csv_header_name => t8('Lock'),
+                              max_length      => 1,
+                              type            => 'Number',
+                              default         => 1,
+                              valid_check     => sub { my ($check) = @_; return ($check =~ m/^(0|1)$/) },
+                            },  # pos 114
+                            {
+                              kivi_datev_name => 'leistungsdatum',
+                              csv_header_name => t8('Payment Date'),
+                              max_length      => 8,
+                              type            => 'Date',
+                              default         => '',
+                              input_check     => sub { my ($check) = @_; return  1 if ('' eq $check); return (ref (DateTime->from_kivitendo($check)) eq 'DateTime') },
+                              formatter       => sub { my ($input) = @_; return '' if ('' eq $input); return DateTime->from_kivitendo($input)->strftime('%d%m%Y') },
+                              valid_check     => sub { my ($check) = @_; return  1 if ('' eq $check); return ($check =~ m/^[0-9]{8}$/) },
+                            },  # pos 115
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },
+                            {
+                              kivi_datev_name => 'not yet implemented',
+                            },  # pos 120
   );
 
 sub new {
@@ -273,10 +526,6 @@ sub check_encoding {
   }) {
     return 1;
   }
-}
-
-sub _kivitendo_to_datev {
-  @kivitendo_to_datev, ({ kivi_datev_name => 'not yet implemented' }) x (116 - @kivitendo_to_datev);
 }
 
 sub header {
@@ -316,7 +565,7 @@ sub header {
   push @header, [ @header_row_1 ];
 
   # second header row, just the column names
-  push @header, [ map { $_->{csv_header_name} } _kivitendo_to_datev() ];
+  push @header, [ map { $_->{csv_header_name} } @kivitendo_to_datev ];
 
   return \@header;
 }
@@ -325,7 +574,6 @@ sub lines {
   my ($self) = @_;
 
   my (@array_of_datev, @warnings);
-  my @csv_columns = _kivitendo_to_datev();
 
   foreach my $row (@{ $self->datev_lines }) {
     my @current_datev_row;
@@ -333,7 +581,7 @@ sub lines {
     # 1. check all datev_lines and see if we have a defined value
     # 2. if we don't have a defined value set a default if exists
     # 3. otherwise die
-    foreach my $column (@csv_columns) {
+    foreach my $column (@kivitendo_to_datev) {
       if ($column->{kivi_datev_name} eq 'not yet implemented') {
         push @current_datev_row, '';
         next;

@@ -28,6 +28,7 @@ my @available_modules = (
   'SL::Controller::TopQuickSearch::GLTransaction',
   'SL::Controller::TopQuickSearch::Customer',
   'SL::Controller::TopQuickSearch::Vendor',
+  'SL::Controller::TopQuickSearch::PhoneNumber',
 );
 my %modules_by_name;
 
@@ -88,7 +89,7 @@ sub enabled_modules {
 
 sub active_modules {
   grep {
-    $::auth->assert($_->auth, 1)
+    !$_->auth || $::auth->assert($_->auth, 1)
   } $_[0]->enabled_modules
 }
 
@@ -101,7 +102,7 @@ sub init_module {
 
   die 'Unknown module ' . $::form->{module} unless my $class = $modules_by_name{$::form->{module}};
 
-  $::auth->assert($class->auth);
+  $::auth->assert($class->auth) if $class->auth;
 
   return $class->new;
 }

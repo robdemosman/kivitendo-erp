@@ -160,6 +160,7 @@ als freundliche Checkliste zum Ausdrucken und Erweitern.
 
 * Locales auf Vollständigkeit prüfen
 
+  $ scripts/locales.pl en
   $ scripts/locales.pl de
 
 * SL::DB::Helper::ALL auf Vollständigkeit prüfen

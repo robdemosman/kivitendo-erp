@@ -39,12 +39,16 @@ use SL::Form;
 use SL::User;
 
 use SL::AM;
+use SL::CVar;
 use SL::CT;
+use SL::Helper::Flash qw(flash_later);
 use SL::IC;
 use SL::WH;
 use SL::OE;
+use SL::Helper::Inventory qw(produce_assembly);
 use SL::Locale::String qw(t8);
 use SL::ReportGenerator;
+use SL::Presenter::Tag qw(checkbox_tag);
 use SL::Presenter::Part;
 
 use SL::DB::Part;
@@ -194,9 +198,8 @@ sub transfer_or_removal_prepare_contents {
   my $all_units = AM->retrieve_units(\%myconfig, $form);
 
   foreach (@contents) {
-    $_->{qty} = $form->format_amount_units('amount'     => $_->{qty},
-                                           'part_unit'  => $_->{partunit},
-                                           'conv_units' => 'convertible');
+    $_->{qty} = $form->format_amount(\%myconfig, $_->{qty}) . ' ' . $_->{partunit};
+
     my $this_unit = $_->{partunit};
 
     if ($all_units->{$_->{partunit}} && ($all_units->{g}->{base_unit} eq $all_units->{$_->{partunit}}->{base_unit})) {
@@ -367,13 +370,6 @@ sub transfer_stock_get_partunit {
   $main::lxdebug->leave_sub();
 }
 
-# vorüberlegung jb 22.2.2009
-# wir benötigen für diese funktion, die anzahl die vom erzeugnis hergestellt werden soll. vielleicht direkt per js fehleingaben verhindern?
-# ferner dann nochmal mit check_asssembly_max_create gegenprüfen und dann transaktionssicher wegbuchen.
-# wir brauchen eine hilfsfunktion, die nee. brauchen wir nicht. der algorithmus läuft genau wie bei check max_create, nur dass hier auch eine lagerbewegung (verbraucht) stattfindet
-# Manko ist derzeit noch, dass unterschiedliche Lagerplätze, bzw. das Quelllager an sich nicht ausgewählt werden können.
-# Laut Absprache in KW11 09 übernimmt mb hier den rest im April ... jb 18.3.09
-
 sub create_assembly {
   $main::lxdebug->enter_sub();
 
@@ -385,43 +381,30 @@ sub create_assembly {
   if ($form->{qty} <= 0) {
     $form->show_generic_error($locale->text('Invalid quantity.'));
   }
-  # TODO Es wäre schön, hier schon die maximale Anzahl der zu fertigenden Erzeugnisse zu haben
-  #else { if ($form->{qty} > $maxcreate) { #s.o.
-  #     $form->show_generic_error($locale->text('Can not create that quantity with current stock'));
-  #     $form->show_generic_error('Maximale Stückzahl' . $maxcreate);
-  #   }
-  #  }
-
   if (!$form->{warehouse_id} || !$form->{bin_id}) {
     $form->error($locale->text('The warehouse or the bin is missing.'));
   }
+  # need part and bin object
+  my ($bin, $assembly);
+  $assembly = SL::DB::Manager::Part->find_by(id => $form->{parts_id}, part_type => 'assembly');
+  $form->show_generic_error($locale->text('Invalid assembly')) unless ref $assembly eq 'SL::DB::Part';
+
+  $bin = SL::DB::Manager::Bin->find_by(id => $form->{bin_id});
+  $form->show_generic_error($locale->text('Invalid bin')) unless ref $bin eq 'SL::DB::Bin';
 
   if (!$::instance_conf->get_show_bestbefore) {
-      $form->{bestbefore} = '';
+    $form->{bestbefore} = '';
   }
 
-  # WIESO war das nicht vorher schon ein %HASH?? ein hash ist ein hash! das hat mich mehr als eine Stunde gekostet herauszufinden. grr. jb 3.3.2009
-  # Anm. jb 18.3. vielleicht auch nur meine unwissenheit in perl-datenstrukturen
-  my %TRANSFER = (
-    'transfer_type'    => 'assembly',
-    'login'            => $::myconfig{login},
-    'dst_warehouse_id' => $form->{warehouse_id},
-    'dst_bin_id'       => $form->{bin_id},
-    'chargenumber'     => $form->{chargenumber},
-    'bestbefore'       => $form->{bestbefore},
-    'assembly_id'      => $form->{parts_id},
-    'qty'              => $form->{qty},
-    'unit'             => $form->{unit},
-    'comment'          => $form->{comment}
+  produce_assembly(
+              part           => $assembly,               # target assembly
+              qty            => $form->{qty},            # qty
+              auto_allocate  => 1,
+              bin            => $bin,                    # needed unless a global standard target is configured
+              chargenumber   => $form->{chargenumber},   # optional
+              bestbefore     => $form->{bestbefore},
+              comment        => $form->{comment},        # optional
   );
-
-  my $ret = WH->transfer_assembly (%TRANSFER);
-  # Frage: Ich pack in den return-wert auch gleich die Fehlermeldung. Irgendwelche Nummern als Fehlerkonstanten definieren find ich auch nicht besonders schick...
-  # Ideen? jb 18.3.09
-  if ($ret ne "1"){
-    # Die locale-Funktion kann keine Double-Quotes escapen, deswegen hier erstmal so (ein wahrscheinlich immerwährender Hotfix) s.a. Frage davor jb 25.4.09
-    $form->show_generic_error($ret);
-  }
 
   delete @{$form}{qw(parts_id partnumber description qty unit chargenumber bestbefore comment)};
 
@@ -546,6 +529,31 @@ sub remove_parts {
   $main::lxdebug->leave_sub();
 }
 
+sub disassemble_assembly {
+  $main::lxdebug->enter_sub();
+
+  $main::auth->assert('warehouse_management');
+
+  my $form = $main::form;
+
+  croak("No assembly ids") unless scalar @{ $form->{ids}} > 0;
+
+  # everything in one transaction
+  my $db = SL::DB::Inventory->new->db;
+  $db->with_transaction(sub {
+
+    foreach my $trans_id (@{ $::form->{ids}} )  {
+      SL::DB::Manager::Inventory->delete_all(where => [ trans_id => $trans_id ]);
+      flash_later('info', t8("Disassembly successful for trans_id #1",  $trans_id));
+    }
+
+    1;
+  }) || die t8('error while disassembling for trans_ids #1 : #2', $form->{ids})  . $db->error . "\n";
+
+  $main::lxdebug->leave_sub();
+  $form->redirect;
+}
+
 # --------------------------------------------------------------------
 # Journal
 # --------------------------------------------------------------------
@@ -565,6 +573,12 @@ sub journal {
 
   show_no_warehouses_error() if (!scalar @{ $form->{WAREHOUSES} });
 
+  my $cvar_configs                           = CVar->get_configs('module' => 'IC');
+  ($form->{CUSTOM_VARIABLES_FILTER_CODE},
+   $form->{CUSTOM_VARIABLES_INCLUSION_CODE}) = CVar->render_search_options('variables'      => $cvar_configs,
+                                                                           'include_prefix' => 'l_',
+                                                                           'include_value'  => 'Y');
+
   setup_wh_journal_action_bar();
 
   $form->header();
@@ -582,13 +596,14 @@ sub generate_journal {
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
 
+  setup_wh_journal_list_all_action_bar();
   $form->{title}   = $locale->text("WHJournal");
   $form->{sort}  ||= 'date';
 
   $form->{report_generator_output_format} = 'HTML' if !$form->{report_generator_output_format};
 
   my %filter;
-  my @columns = qw(trans_id date warehouse_from bin_from warehouse_to bin_to partnumber type_and_classific partdescription chargenumber bestbefore trans_type comment qty unit partunit employee oe_id projectnumber);
+  my @columns = qw(ids trans_id date warehouse_from bin_from warehouse_to bin_to partnumber type_and_classific partdescription chargenumber bestbefore trans_type comment qty unit partunit employee oe_id projectnumber);
 
   # filter stuff
   map { $filter{$_} = $form->{$_} if ($form->{$_}) } qw(warehouse_id bin_id classification_id partnumber description chargenumber bestbefore transtype_id transtype_ids comment projectnumber);
@@ -620,7 +635,10 @@ sub generate_journal {
     $last_nr        = $pages->{per_page};
   }
 
+  my $old_l_trans_id = $form->{l_trans_id};
   my @contents  = WH->get_warehouse_journal(%filter);
+  $form->{l_trans_id} = $old_l_trans_id;
+
   # get maxcount
   if (!$form->{maxrows}) {
     $form->{maxrows} = scalar @contents ;
@@ -628,11 +646,21 @@ sub generate_journal {
 
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
+  my $cvar_configs                 = CVar->get_configs('module' => 'IC');
+  my @includeable_custom_variables = grep { $_->{includeable} } @{ $cvar_configs };
+  my @searchable_custom_variables  = grep { $_->{searchable} }  @{ $cvar_configs };
+  push @columns, map { "cvar_$_->{name}" } @includeable_custom_variables;
+
   my @hidden_variables = map { "l_${_}" } @columns;
   push @hidden_variables, qw(warehouse_id bin_id partnumber description chargenumber bestbefore qty_op qty qty_unit unit partunit fromdate todate transtype_ids comment projectnumber);
   push @hidden_variables, qw(classification_id);
+  push @hidden_variables, map({'cvar_'. $_->{name}}                                         @searchable_custom_variables);
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_from'}  grep({$_->{type} eq  'date'}  @searchable_custom_variables));
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_to'}    grep({$_->{type} eq  'date'}  @searchable_custom_variables));
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_qtyop'} grep({$_->{type} eq 'number'} @searchable_custom_variables));
 
   my %column_defs = (
+    'ids'             => { raw_header_data => checkbox_tag("", id => "check_all", checkall  => "[data-checkall=1]") },
     'date'            => { 'text' => $locale->text('Date'), },
     'trans_id'        => { 'text' => $locale->text('Trans Id'), },
     'trans_type'      => { 'text' => $locale->text('Trans Type'), },
@@ -655,6 +683,9 @@ sub generate_journal {
     'oe_id'           => { 'text' => $locale->text('Document'), },
   );
 
+  my %column_defs_cvars = map { +"cvar_$_->{name}" => { 'text' => $_->{description} } } @includeable_custom_variables;
+  %column_defs          = (%column_defs, %column_defs_cvars);
+
   if ($form->{transtype_ids} && 'ARRAY' eq ref $form->{transtype_ids}) {
     for (my $i = 0; $i < scalar(@{ $form->{transtype_ids} }); $i++) {
       delete $form->{transtype_ids}[$i] if $form->{transtype_ids}[$i] eq '';
@@ -665,7 +696,7 @@ sub generate_journal {
   my $href = build_std_url('action=generate_journal', grep { $form->{$_} } @hidden_variables);
   $href .= "&maxrows=".$form->{maxrows};
 
-  map { $column_defs{$_}->{link} = $href ."&page=".$page. "&sort=${_}&order=" . Q($_ eq $form->{sort} ? 1 - $form->{order} : $form->{order}) } @columns;
+  map { $column_defs{$_}->{link} = $href ."&page=".$page. "&sort=${_}&order=" . Q($_ eq $form->{sort} ? 1 - $form->{order} : $form->{order}) } grep {!/^cvar/} @columns;
 
   my %column_alignment = map { $_ => 'right' } qw(qty);
 
@@ -673,6 +704,7 @@ sub generate_journal {
   $column_defs{partunit}->{visible} = 1;
   $column_defs{type_and_classific}->{visible} = 1;
   $column_defs{type_and_classific}->{link} ='';
+  $column_defs{ids}->{visible} = 1;
 
   $report->set_columns(%column_defs);
   $report->set_column_order(@columns);
@@ -689,6 +721,13 @@ sub generate_journal {
 
   my $all_units = AM->retrieve_units(\%myconfig, $form);
 
+  CVar->add_custom_variables_to_report('module'         => 'IC',
+                                       'trans_id_field' => 'parts_id',
+                                       'configs'        => $cvar_configs,
+                                       'column_defs'    => \%column_defs,
+                                       'data'           => \@contents);
+
+
   my %doc_types = ( 'sales_quotation'         => { script => 'oe', title => $locale->text('Sales quotation') },
                     'sales_order'             => { script => 'oe', title => $locale->text('Sales Order') },
                     'request_quotation'       => { script => 'oe', title => $locale->text('Request quotation') },
@@ -700,13 +739,13 @@ sub generate_journal {
                   );
 
   my $idx       = 0;
-
+  my $undo_date  = DateTime->today->subtract(days => $::instance_conf->get_undo_transfer_interval);
   foreach my $entry (@contents) {
     $entry->{type_and_classific} = SL::Presenter::Part::type_abbreviation($entry->{part_type}) .
                                    SL::Presenter::Part::classification_abbreviation($entry->{classification_id});
     $entry->{qty}        = $form->format_amount(\%myconfig, $entry->{qty});
+    $entry->{assembled} = $entry->{trans_type} eq 'assembled' ? 1 : '';
     $entry->{trans_type} = $locale->text($entry->{trans_type});
-
     my $row = { };
 
     foreach my $column (@columns) {
@@ -716,8 +755,13 @@ sub generate_journal {
       };
     }
 
+    if ($entry->{assembled}) {
+      my $insertdate = DateTime->from_kivitendo($entry->{shippingdate});
+      if (ref $undo_date eq 'DateTime' && ref $insertdate eq 'DateTime' && $insertdate > $undo_date) {
+        $row->{ids}->{raw_data} = checkbox_tag("ids[]", value => $entry->{trans_id}, "data-checkall" => 1);
+      }
+    }
     $row->{trans_type}->{raw_data} = $entry->{trans_type};
-
     if ($form->{l_oe_id}) {
       $row->{oe_id}->{data} = '';
       my $info              = $entry->{oe_id_info};
@@ -734,12 +778,17 @@ sub generate_journal {
     $idx++;
   }
 
+
+    $report->set_options(
+      raw_top_info_text     => $form->parse_html_template('wh/report_top'),
+      raw_bottom_info_text  => $form->parse_html_template('wh/report_bottom', { callback => $href }),
+    );
   if ( ! $allrows ) {
       $pages->{max}  = SL::DB::Helper::Paginated::ceil($form->{maxrows}, $pages->{per_page}) || 1;
       $pages->{page} = $page < 1 ? 1: $page > $pages->{max} ? $pages->{max}: $page;
       $pages->{common} = [ grep { $_->{visible} } @{ SL::DB::Helper::Paginated::make_common_pages($pages->{page}, $pages->{max}) } ];
 
-      $report->set_options('raw_bottom_info_text' => $form->parse_html_template('common/paginate',
+      $report->set_options('raw_bottom_info_text' =>  $form->parse_html_template('wh/report_bottom', { callback => $href }) . $form->parse_html_template('common/paginate',
                                                             { 'pages' => $pages , 'base_url' => $href.'&sort='.$form->{sort}.'&order='.$form->{order}}) );
   }
   $report->generate_with_headers();
@@ -761,9 +810,16 @@ sub report {
   my $locale   = $main::locale;
 
   $form->get_lists('warehouses' => { 'key'    => 'WAREHOUSES',
-                                     'bins'   => 'BINS', });
+                                     'bins'   => 'BINS', },
+                   'partsgroup' => 'PARTSGROUPS');
 
   show_no_warehouses_error() if (!scalar @{ $form->{WAREHOUSES} });
+
+  my $cvar_configs                           = CVar->get_configs('module' => 'IC');
+  ($form->{CUSTOM_VARIABLES_FILTER_CODE},
+   $form->{CUSTOM_VARIABLES_INCLUSION_CODE}) = CVar->render_search_options('variables'      => $cvar_configs,
+                                                                           'include_prefix' => 'l_',
+                                                                           'include_value'  => 'Y');
 
   $form->{title}   = $locale->text("Report about warehouse contents");
 
@@ -771,8 +827,10 @@ sub report {
 
   $form->header();
   print $form->parse_html_template("wh/report_filter",
-                                   { "WAREHOUSES" => $form->{WAREHOUSES},
-                                     "UNITS"      => AM->unit_select_data(AM->retrieve_units(\%myconfig, $form)) });
+                                   { "WAREHOUSES"  => $form->{WAREHOUSES},
+                                     "PARTSGROUPS" => $form->{PARTSGROUPS},
+                                     "UNITS"       => AM->unit_select_data(AM->retrieve_units(\%myconfig, $form)),
+                                   });
 
   $main::lxdebug->leave_sub();
 }
@@ -794,7 +852,7 @@ sub generate_report {
   my @columns = qw(warehousedescription bindescription partnumber type_and_classific partdescription chargenumber bestbefore comment qty partunit list_price purchase_price stock_value);
 
   # filter stuff
-  map { $filter{$_} = $form->{$_} if ($form->{$_}) } qw(warehouse_id bin_id classification_id partnumber description chargenumber bestbefore date include_invalid_warehouses);
+  map { $filter{$_} = $form->{$_} if ($form->{$_}) } qw(warehouse_id bin_id classification_id partnumber description partsgroup_id chargenumber bestbefore date include_invalid_warehouses);
 
   # show filter stuff also in report
   my @options;
@@ -811,6 +869,8 @@ sub generate_report {
    classification_id => sub { push @options, $locale->text('Parts Classification'). " : ".
                                                SL::DB::Manager::PartClassification->get_first(where => [ id => $form->{classification_id} ] )->description; },
    description    => sub { push @options, $locale->text('Description')    . " : $form->{description}"},
+   partsgroup_id  => sub { push @options, $locale->text('Partsgroup')     . " : " .
+                                            SL::DB::PartsGroup->new(id => $form->{partsgroup_id})->load->partsgroup},
    chargenumber   => sub { push @options, $locale->text('Charge Number')  . " : $form->{chargenumber}"},
    bestbefore     => sub { push @options, $locale->text('Best Before')    . " : $form->{bestbefore}"},
    include_invalid_warehouses    => sub { push @options, $locale->text('Include invalid warehouses ')},
@@ -835,7 +895,7 @@ sub generate_report {
   $form->{report_generator_output_format} = 'HTML' if !$form->{report_generator_output_format};
 
   # manual paginating
-  my $allrows        = !!($form->{report_generator_output_format} ne 'HTML') ;
+  my $allrows        = $form->{report_generator_output_format} eq 'HTML' ? $form->{allrows} : 1;
   my $page           = $::form->{page} || 1;
   my $pages          = {};
   $pages->{per_page} = $::form->{per_page} || 20;
@@ -861,10 +921,19 @@ sub generate_report {
 
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
+  my $cvar_configs                 = CVar->get_configs('module' => 'IC');
+  my @includeable_custom_variables = grep { $_->{includeable} } @{ $cvar_configs };
+  my @searchable_custom_variables  = grep { $_->{searchable} }  @{ $cvar_configs };
+  push @columns, map { "cvar_$_->{name}" } @includeable_custom_variables;
+
   my @hidden_variables = map { "l_${_}" } @columns;
-  push @hidden_variables, qw(warehouse_id bin_id partnumber partstypes_id description chargenumber bestbefore qty_op qty qty_unit partunit l_warehousedescription l_bindescription);
+  push @hidden_variables, qw(warehouse_id bin_id partnumber partstypes_id description partsgroup_id chargenumber bestbefore qty_op qty qty_unit partunit l_warehousedescription l_bindescription);
   push @hidden_variables, qw(include_empty_bins subtotal include_invalid_warehouses date);
-  push @hidden_variables, qw(classification_id stock_value_basis);
+  push @hidden_variables, qw(classification_id stock_value_basis allrows);
+  push @hidden_variables, map({'cvar_'. $_->{name}}                                         @searchable_custom_variables);
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_from'}  grep({$_->{type} eq 'date'}   @searchable_custom_variables));
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_to'}    grep({$_->{type} eq 'date'}   @searchable_custom_variables));
+  push @hidden_variables, map({'cvar_'. $_->{name} .'_qtyop'} grep({$_->{type} eq 'number'} @searchable_custom_variables));
 
   my %column_defs = (
     'warehousedescription' => { 'text' => $locale->text('Warehouse'), },
@@ -881,10 +950,13 @@ sub generate_report {
     'list_price'           => { 'text' => $locale->text('List Price'), },
   );
 
+  my %column_defs_cvars = map { +"cvar_$_->{name}" => { 'text' => $_->{description} } } @includeable_custom_variables;
+  %column_defs = (%column_defs, %column_defs_cvars);
+
   my $href = build_std_url('action=generate_report', grep { $form->{$_} } @hidden_variables);
   $href .= "&maxrows=".$form->{maxrows};
 
-  map { $column_defs{$_}->{link} = $href . "&page=".$page."&sort=${_}&order=" . Q($_ eq $sort_col ? 1 - $form->{order} : $form->{order}) } @columns;
+  map { $column_defs{$_}->{link} = $href . "&page=".$page."&sort=${_}&order=" . Q($_ eq $sort_col ? 1 - $form->{order} : $form->{order}) } grep {!/^cvar_/} @columns;
 
   my %column_alignment = map { $_ => 'right' } qw(qty list_price purchase_price stock_value);
 
@@ -907,6 +979,11 @@ sub generate_report {
                        'attachment_basename'  => strftime($locale->text('warehouse_report_list') . '_%Y%m%d', localtime time));
   $report->set_options_from_form();
   $locale->set_numberformat_wo_thousands_separator(\%myconfig) if lc($report->{options}->{output_format}) eq 'csv';
+  CVar->add_custom_variables_to_report('module'         => 'IC',
+                                       'trans_id_field' => 'parts_id',
+                                       'configs'        => $cvar_configs,
+                                       'column_defs'    => \%column_defs,
+                                       'data'           => \@contents);
 
   my $all_units = AM->retrieve_units(\%myconfig, $form);
   my $idx       = 0;
@@ -923,9 +1000,6 @@ sub generate_report {
     map { $subtotals{$_} += $entry->{$_} } @subtotals_columns;
     $total_stock_value   += $entry->{stock_value} * 1;
     $entry->{qty}         = $form->format_amount(\%myconfig, $entry->{qty});
-#    $entry->{qty}         = $form->format_amount_units('amount'     => $entry->{qty},
-#                                                       'part_unit'  => $entry->{partunit},
-#                                                       'conv_units' => 'convertible');
     $entry->{stock_value} = $form->format_amount(\%myconfig, $entry->{stock_value} * 1, 2);
     $entry->{purchase_price} = $form->format_amount(\%myconfig, $entry->{purchase_price} * 1, 2);
     $entry->{list_price}     = $form->format_amount(\%myconfig, $entry->{list_price}     * 1, 2);
@@ -938,9 +1012,6 @@ sub generate_report {
 
       my $row = { map { $_ => { 'data' => '', 'class' => 'listsubtotal', 'align' => $column_alignment{$_}, } } @columns };
       $row->{qty}->{data}         = $form->format_amount(\%myconfig, $subtotals{qty});
-#      $row->{qty}->{data}         = $form->format_amount_units('amount'     => $subtotals{qty} * 1,
-#                                                               'part_unit'  => $entry->{partunit},
-#                                                               'conv_units' => 'convertible');
       $row->{stock_value}->{data} = $form->format_amount(\%myconfig, $subtotals{stock_value} * 1, 2);
       $row->{purchase_price}->{data} = $form->format_amount(\%myconfig, $subtotals{purchase_price} * 1, 2);
       $row->{list_price}->{data}     = $form->format_amount(\%myconfig, $subtotals{list_price}     * 1, 2);
@@ -1171,6 +1242,22 @@ sub setup_wh_journal_action_bar {
     );
   }
 }
+sub setup_wh_journal_list_all_action_bar {
+  my ($action) = @_;
+  for my $bar ($::request->layout->get('actionbar')) {
+    $bar->add(
+      combobox => [
+        action => [ t8('Actions') ],
+        action => [
+          t8('Disassemble Assembly'),
+            submit => [ '#form', { action => 'disassemble_assembly' } ],
+            checks => [ [ 'kivi.check_if_entries_selected', '[name="ids[]"]' ] ],
+          ],
+        ],
+    );
+  }
+}
+
 
 1;
 

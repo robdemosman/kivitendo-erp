@@ -10,6 +10,7 @@ __PACKAGE__->meta->table('oe');
 
 __PACKAGE__->meta->columns(
   amount                  => { type => 'numeric', precision => 15, scale => 5 },
+  billing_address_id      => { type => 'integer' },
   closed                  => { type => 'boolean', default => 'false' },
   cp_id                   => { type => 'integer' },
   currency_id             => { type => 'integer', not_null => 1 },
@@ -21,6 +22,7 @@ __PACKAGE__->meta->columns(
   delivery_vendor_id      => { type => 'integer' },
   department_id           => { type => 'integer' },
   employee_id             => { type => 'integer' },
+  exchangerate            => { type => 'numeric', precision => 15, scale => 5 },
   expected_billing_date   => { type => 'date' },
   globalproject_id        => { type => 'integer' },
   id                      => { type => 'integer', not_null => 1, sequence => 'id' },
@@ -43,6 +45,7 @@ __PACKAGE__->meta->columns(
   shippingpoint           => { type => 'text' },
   shipto_id               => { type => 'integer' },
   shipvia                 => { type => 'text' },
+  tax_point               => { type => 'date' },
   taxincluded             => { type => 'boolean' },
   taxzone_id              => { type => 'integer', not_null => 1 },
   transaction_description => { type => 'text' },
@@ -55,6 +58,11 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  billing_address => {
+    class       => 'SL::DB::AdditionalBillingAddress',
+    key_columns => { billing_address_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },

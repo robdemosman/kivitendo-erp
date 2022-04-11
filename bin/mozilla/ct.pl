@@ -58,6 +58,7 @@ use SL::DB::DeliveryTerm;
 use SL::ReportGenerator;
 use SL::Locale::String qw(t8);
 use SL::MoreCommon qw(uri_encode);
+use SL::ZUGFeRD;
 
 require "bin/mozilla/common.pl";
 require "bin/mozilla/reportgenerator.pl";
@@ -67,10 +68,13 @@ use strict;
 
 # end of main
 
+sub _zugferd_settings {
+  return ([ -1, $::locale->text('Use settings from client configuration') ],
+          @SL::ZUGFeRD::customer_settings);
+}
+
 sub search {
   $main::lxdebug->enter_sub();
-
-  $main::auth->assert('customer_vendor_edit');
 
   my $form     = $main::form;
   my $locale   = $main::locale;
@@ -89,6 +93,8 @@ sub search {
 
   $form->{title}    = $form->{IS_CUSTOMER} ? $locale->text('Customers') : $locale->text('Vendors');
 
+  $form->{ZUGFERD_SETTINGS} = [ _zugferd_settings() ];
+
   setup_ct_search_action_bar();
 
   $form->header();
@@ -99,7 +105,6 @@ sub search {
 
 sub search_contact {
   $::lxdebug->enter_sub;
-  $::auth->assert('customer_vendor_edit');
 
   $::form->{CUSTOM_VARIABLES}                  = CVar->get_configs('module' => 'Contacts');
   ($::form->{CUSTOM_VARIABLES_FILTER_CODE},
@@ -120,8 +125,6 @@ sub search_contact {
 sub list_names {
   $main::lxdebug->enter_sub();
 
-  $main::auth->assert('customer_vendor_edit');
-
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
   my $locale   = $main::locale;
@@ -141,17 +144,22 @@ sub list_names {
     push @options, $locale->text('Orphaned');
   }
 
-  push @options, $locale->text('Name') . " : $form->{name}"                                       if $form->{name};
-  push @options, $locale->text('Contact') . " : $form->{contact}"                                 if $form->{contact};
-  push @options, $locale->text('Number') . qq| : $form->{"$form->{db}number"}|                    if $form->{"$form->{db}number"};
-  push @options, $locale->text('E-mail') . " : $form->{email}"                                    if $form->{email};
-  push @options, $locale->text('Contact person (surname)')           . " : $form->{cp_name}"      if $form->{cp_name};
-  push @options, $locale->text('Billing/shipping address (city)')    . " : $form->{addr_city}"    if $form->{addr_city};
-  push @options, $locale->text('Billing/shipping address (zipcode)') . " : $form->{addr_zipcode}" if $form->{addr_zipcode};
-  push @options, $locale->text('Billing/shipping address (street)')  . " : $form->{addr_street}"  if $form->{addr_street};
-  push @options, $locale->text('Billing/shipping address (country)') . " : $form->{addr_country}" if $form->{addr_country};
-  push @options, $locale->text('Billing/shipping address (GLN)')     . " : $form->{addr_gln}"     if $form->{addr_gln};
-  push @options, $locale->text('Quick Search')                       . " : $form->{all}"          if $form->{all};
+  my @zugferd_settings_list = _zugferd_settings();
+  my $zugferd_filter        = $form->{create_zugferd_invoices} eq '' ? undef : $zugferd_settings_list[$form->{create_zugferd_invoices} + 1]->[1];
+
+  push @options, $locale->text('Name')                               . " : $form->{name}"                  if $form->{name};
+  push @options, $locale->text('Contact')                            . " : $form->{contact}"               if $form->{contact};
+  push @options, $locale->text('Number')                           . qq| : $form->{"$form->{db}number"}|   if $form->{"$form->{db}number"};
+  push @options, $locale->text('E-mail')                             . " : $form->{email}"                 if $form->{email};
+  push @options, $locale->text('All phone numbers')                  . " : $form->{all_phonenumbers}"      if $form->{all_phonenumbers};
+  push @options, $locale->text('Contact person (surname)')           . " : $form->{cp_name}"               if $form->{cp_name};
+  push @options, $locale->text('Billing/shipping address (city)')    . " : $form->{addr_city}"             if $form->{addr_city};
+  push @options, $locale->text('Billing/shipping address (zipcode)') . " : $form->{addr_zipcode}"          if $form->{addr_zipcode};
+  push @options, $locale->text('Billing/shipping address (street)')  . " : $form->{addr_street}"           if $form->{addr_street};
+  push @options, $locale->text('Billing/shipping address (country)') . " : $form->{addr_country}"          if $form->{addr_country};
+  push @options, $locale->text('Billing/shipping address (GLN)')     . " : $form->{addr_gln}"              if $form->{addr_gln};
+  push @options, $locale->text('Quick Search')                       . " : $form->{all}"                   if $form->{all};
+  push @options, $locale->text('Factur-X/ZUGFeRD settings')          . " : $zugferd_filter"                if $zugferd_filter;
 
   if ($form->{business_id}) {
     my $business = SL::DB::Manager::Business->find_by(id => $form->{business_id});
@@ -175,7 +183,7 @@ sub list_names {
 
   my @columns = (
     'id',        'name',    "$form->{db}number",   'contact', 'main_contact_person',
-    'phone',    'discount',
+    'department_1',         'department_2',        'phone',   'discount',
     'fax',       'email',   'taxnumber',           'street',    'zipcode' , 'city',
     'business',  'payment', 'invnumber', 'ordnumber',           'quonumber', 'salesman',
     'country',   'gln',     'insertdate',           'pricegroup', 'contact_origin', 'invoice_mail',
@@ -194,6 +202,8 @@ sub list_names {
     'name'              => { 'text' => $form->{IS_CUSTOMER} ? $::locale->text('Customer Name') : $::locale->text('Vendor Name'), },
     'contact'           => { 'text' => $locale->text('Contact'), },
     'main_contact_person'  => { 'text' => $locale->text('Main Contact Person'), },
+    'department_1'      => { 'text' => $locale->text('Department') . " 1", },
+    'department_2'      => { 'text' => $locale->text('Department') . " 2", },
     'phone'             => { 'text' => $locale->text('Phone'), },
     'fax'               => { 'text' => $locale->text('Fax'), },
     'email'             => { 'text' => $locale->text('E-mail'), },
@@ -219,6 +229,7 @@ sub list_names {
     'creditlimit'       => { 'text' => $locale->text('Credit Limit'), },
     'ustid'             => { 'text' => $locale->text('VAT ID'), },
     'commercial_court'  => { 'text' => $locale->text('Commercial court'), },
+    create_zugferd_invoices => { text => $locale->text('Factur-X/ZUGFeRD settings'), },
     %column_defs_cvars,
   );
 
@@ -227,6 +238,7 @@ sub list_names {
   my @hidden_variables  = ( qw(
       db status obsolete name contact email cp_name addr_street addr_zipcode
       addr_city addr_country addr_gln business_id salesman_id insertdateto insertdatefrom all
+      all_phonenumbers
     ), "$form->{db}number",
     map({ "cvar_$_->{name}" } @searchable_custom_variables),
     map({'cvar_'. $_->{name} .'_from'} grep({$_->{type} eq 'date'} @searchable_custom_variables)),
@@ -326,7 +338,6 @@ sub list_names {
 
 sub list_contacts {
   $::lxdebug->enter_sub;
-  $::auth->assert('customer_vendor_edit');
 
   $::form->{sortdir} = 1 unless defined $::form->{sortdir};
 

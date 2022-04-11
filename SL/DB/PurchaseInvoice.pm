@@ -11,6 +11,7 @@ use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::LinkedRecords;
 use SL::DB::Helper::Payment qw(:ALL);
+use SL::DB::Helper::SalesPurchaseInvoice;
 use SL::Locale::String qw(t8);
 use Rose::DB::Object::Helpers qw(has_loaded_related forget_related);
 
@@ -182,6 +183,7 @@ sub add_ap_amount_row {
     chart_id   => $params{chart}->id,
     chart_link => $params{chart}->link,
     transdate  => $self->transdate,
+    gldate     => $self->gldate,
     taxkey     => $tax->taxkey,
     tax_id     => $tax->id,
     project_id => $params{project_id},
@@ -196,6 +198,7 @@ sub add_ap_amount_row {
        chart_id   => $tax->chart_id,
        chart_link => $tax->chart->link,
        transdate  => $self->transdate,
+       gldate     => $self->gldate,
        taxkey     => $tax->taxkey,
        tax_id     => $tax->id,
        project_id => $params{project_id},
@@ -210,6 +213,12 @@ sub mark_as_paid {
   my ($self) = @_;
 
   $self->update_attributes(paid => $self->amount);
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
 }
 
 1;

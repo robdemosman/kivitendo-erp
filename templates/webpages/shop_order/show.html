@@ -118,6 +118,7 @@
           <tr><td><b>[% 'Shop Ordernotes' | $T8 %]</b></td><td>[% HTML.escape(IMPORT.shop_customer_comment) %]</td></tr>
           <tr><td><b>[% 'Shop Orderamount' | $T8 %]</b></td><td>[% HTML.escape(IMPORT.amount_as_number) %]</td></tr>
           <tr><td><b>[% 'Shipping costs' | $T8 %]</b></td><td>[% HTML.escape(IMPORT.shipping_costs_as_number) %]</td></tr>
+          <tr><td><b>[% 'Payment description' | $T8 %]</b></td><td>[% HTML.escape(IMPORT.payment_description) %]</td></tr>
         </table>
       </td>
       <td style="padding-left: 20px; vertical-align: top;">
@@ -131,7 +132,7 @@
             <div style="height: 125px; overflow:auto;">
               <table>
                 <tr class="listheading">
-                  <th colspan="7">Customer Proposals</td>
+                  <th colspan="7">[% 'Customer Proposals' | $T8 %]</td>
                 </tr>
                 [% FOREACH prop = PROPOSALS %][% IF prop.order_lock %][% SET orderlock_class = 'style="background:rgba(232, 32, 23, 0.2);"' %][% ELSE %][% SET orderlock_class = '' %][% END %]
                 <tr class="listrow" [% orderlock_class %]>

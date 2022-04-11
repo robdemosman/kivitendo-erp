@@ -14,6 +14,7 @@ use SL::DB::Language;
 use SL::DB::Letter;
 use SL::DB::LetterDraft;
 use SL::DB::Printer;
+use SL::File;
 use SL::Helper::Flash qw(flash flash_later);
 use SL::Helper::CreatePDF;
 use SL::Helper::PrintOptions;
@@ -106,7 +107,7 @@ sub action_update_contacts {
     return $self->js
       ->replaceWith(
         '#letter_cp_id',
-        SL::Presenter->get->select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
+        select_tag('letter.cp_id', [], value_key => 'cp_id', title_key => 'full_name')
       )
       ->render;
   }
@@ -151,7 +152,7 @@ sub action_delete {
   my ($self, %params) = @_;
 
   if (!$self->letter->delete) {
-    flash('error', t8('An error occured. Letter could not be deleted.'));
+    flash('error', t8('An error occurred. Letter could not be deleted.'));
     return $self->action_update;
   }
 
@@ -184,8 +185,7 @@ sub action_list {
 sub action_print_letter {
   my ($self, %params) = @_;
 
-  my $display_form = $::form->{display_form} || "display_form";
-  my $letter       = $self->_update;
+  my $letter = $self->_update;
 
   my ($template_file, @template_files) = SL::Helper::CreatePDF->find_template(
     name        => 'letter',
@@ -208,7 +208,7 @@ sub action_print_letter {
       letter        => $letter,
       template_meta => {
         formname  => 'letter',
-        language  => SL::DB::Language->new,
+        language  => SL::DB::Manager::Language->find_by_or_create(id => $::form->{language_id}*1),
         extension => 'pdf',
         format    => $::form->{format},
         media     => $::form->{media},
@@ -234,6 +234,17 @@ sub action_print_letter {
       );
 
       $webdav_file->store(file => $result{file_name});
+    }
+
+    if ($::instance_conf->get_doc_storage) {
+      my %save_params = (object_id    => $letter->id,
+                         object_type  => 'letter',
+                         mime_type    => 'application/pdf',
+                         source       => 'created',
+                         file_type    => 'document',
+                         file_name    => $attachment_name,
+                         file_path    => $result{file_name});
+      SL::File->save(%save_params);
     }
 
     # set some form defaults for printing webdav copy variables
@@ -314,7 +325,7 @@ sub action_send_email {
 sub _display {
   my ($self, %params) = @_;
 
-  $::request->{layout}->use_javascript("${_}.js") for qw(ckeditor/ckeditor ckeditor/adapters/jquery kivi.Letter);
+  $::request->{layout}->use_javascript("${_}.js") for qw(ckeditor/ckeditor ckeditor/adapters/jquery kivi.Letter kivi.SalesPurchase kivi.File);
 
   my $letter = $self->letter;
 
@@ -512,21 +523,6 @@ sub set_greetings {
   $letter->greeting(t8('Dear Sir or Madam,'));
 }
 
-sub export_letter_to_form {
-  my ($self, $letter) = @_;
-  # nope, not pretty.
-
-  $letter ||= $self->letter;
-
-  for ($letter->meta->columns) {
-    if ((ref $_) =~ /Date/i) {
-      $::form->{$_->name} = $letter->$_->to_kivitendo;
-    } else {
-      $::form->{$_->name} = $letter->$_;
-    }
-  }
-}
-
 sub init_letter {
   my ($self) = @_;
 
@@ -624,6 +620,8 @@ sub setup_load_letter_draft_action_bar {
 sub setup_display_action_bar {
   my ($self, %params) = @_;
 
+  my $vc = $self->is_sales ? 'customer' : 'vendor'; # needed for show_email_dialog
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
@@ -659,7 +657,7 @@ sub setup_display_action_bar {
         ],
         action => [
           t8('E-mail'),
-          call     => [ 'kivi.SalesPurchase.show_email_dialog', 'Letter/send_email' ],
+          call     => [ 'kivi.SalesPurchase.show_email_dialog', 'Letter/send_email', $vc, '#letter_' . $vc . '_id' ],
           disabled => !$self->letter->id ? t8('The object has not been saved yet.') : undef,
         ],
       ],

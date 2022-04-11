@@ -27,6 +27,7 @@ sub action_list_turnover {
                                          amount => { lt => \'paid'},
                                        ],
                       ],
+      sort_by      => 'transdate DESC',
       with_objects => [ 'dunnings' ],
     );
   } else {
@@ -38,12 +39,11 @@ sub action_list_turnover {
                                   amount => { lt => \'paid'},
                                 ],
                  ],
-      sort_by => 'invnumber DESC',
+      sort_by => 'transdate DESC',
     );
   }
   my $open_items;
   if (@{$open_invoices}) {
-    return $self->render(\'', { type => 'json' }) unless scalar @{$open_invoices};
     $open_items = $self->_list_open_items($open_invoices);
   }
   my $open_orders = $self->_get_open_orders;
@@ -181,12 +181,12 @@ sub action_get_invoices {
   if ( $::form->{db} eq 'customer' ) {
     $invoices = SL::DB::Manager::Invoice->get_all(
       query   => [ customer_id => $cv, ],
-      sort_by => 'invnumber DESC',
+      sort_by => 'transdate DESC',
     );
   } else {
     $invoices = SL::DB::Manager::PurchaseInvoice->get_all(
       query   => [ vendor_id => $cv, ],
-      sort_by => 'invnumber DESC',
+      sort_by => 'transdate DESC',
     );
   }
   $self->render('customer_vendor_turnover/invoices_statistic', { layout => 0 }, invoices => $invoices);
@@ -206,7 +206,7 @@ sub action_get_orders {
                    customer_id => $cv,
                    quotation   => ($type eq 'quotation' ? 'T' : 'F')
                  ],
-      sort_by => ( $type eq 'order' ? 'ordnumber DESC' : 'quonumber DESC'),
+      sort_by => 'transdate DESC',
     );
   } else {
     $orders = SL::DB::Manager::Order->get_all(
@@ -214,7 +214,7 @@ sub action_get_orders {
                    vendor_id => $cv,
                    quotation => ($type eq 'quotation' ? 'T' : 'F')
                  ],
-      sort_by => ( $type eq 'order' ? 'ordnumber DESC' : 'quonumber DESC'),
+      sort_by => 'transdate DESC',
     );
   }
   if ( $type eq 'order') {
@@ -237,7 +237,7 @@ sub _get_open_orders {
                    customer_id => $cv,
                    closed      => 'F',
                  ],
-      sort_by => 'ordnumber DESC',
+      sort_by => 'transdate DESC',
     );
   } else {
     $open_orders = SL::DB::Manager::Order->get_all(
@@ -245,7 +245,7 @@ sub _get_open_orders {
                    vendor_id => $cv,
                    closed    => 'F',
                  ],
-      sort_by => 'ordnumber DESC',
+      sort_by => 'transdate DESC',
     );
   }
 

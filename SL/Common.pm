@@ -25,6 +25,7 @@ use Encode qw(decode);
 
 use SL::DBUtils;
 use SL::DB;
+use SL::HTML::Util;
 
 sub unique_id {
   my ($a, $b) = gettimeofday();
@@ -342,6 +343,11 @@ sub get_vc_details {
   $query = qq|SELECT * FROM shipto WHERE (trans_id = ?)|;
   $form->{SHIPTO} = selectall_hashref_query($form, $dbh, $query, $vc_id);
 
+  if ($vc eq 'customer') {
+    $query = qq|SELECT * FROM additional_billing_addresses WHERE (customer_id = ?)|;
+    $form->{ADDITIONAL_BILLING_ADDRESSES} = selectall_hashref_query($form, $dbh, $query, $vc_id);
+  }
+
   $query = qq|SELECT * FROM contacts WHERE (cp_cv_id = ?)|;
   $form->{CONTACTS} = selectall_hashref_query($form, $dbh, $query, $vc_id);
 
@@ -382,6 +388,8 @@ sub save_email_status {
 
   my ($self, $myconfig, $form) = @_;
 
+  return unless ($::instance_conf->get_email_journal);
+
   my ($table, $query, $dbh);
 
   if ($form->{script} eq 'oe.pl') {
@@ -418,7 +426,7 @@ sub save_email_status {
       . $main::locale->text('To (email)') . ": $form->{email}\n"
       . "${cc}${bcc}"
       . $main::locale->text('Subject') . ": $form->{subject}\n\n"
-      . $main::locale->text('Message') . ": $form->{message}";
+      . $main::locale->text('Message') . ": " . SL::HTML::Util->strip($form->{message});
 
     $intnotes =~ s|\r||g;
 
@@ -539,16 +547,16 @@ sub copy_file_to_webdav_folder {
   foreach my $item (qw(tmpdir tmpfile type)){
     next if $form->{$item};
     $::lxdebug->message(LXDebug::WARN(), 'Missing parameter:' . $item);
-    $::form->error($::locale->text("Missing parameter for WebDAV file copy"));
+    $::lxdebug->leave_sub();
+    return $::locale->text("Missing parameter for WebDAV file copy");
   }
 
   my ($webdav_folder, $document_name) =  get_webdav_folder($form);
 
   if (! $webdav_folder){
-    $::lxdebug->leave_sub();
     $::lxdebug->message(LXDebug::WARN(), 'Cannot check correct WebDAV folder');
-    $::form->error($::locale->text("Cannot check correct WebDAV folder"));
-    return undef;
+    $::lxdebug->leave_sub();
+    return $::locale->text("Cannot check correct WebDAV folder")
   }
 
   $complete_path =  File::Spec->catfile($form->{cwd},  $webdav_folder);
@@ -562,7 +570,11 @@ sub copy_file_to_webdav_folder {
     chdir($current_dir);
   }
 
-  opendir my $dh, $complete_path or die "Could not open $complete_path: $!";
+  my $dh;
+  if (!opendir $dh, $complete_path) {
+    $::lxdebug->leave_sub();
+    return "Could not open $complete_path: $!";
+  }
 
   my ($newest_name, $newest_time);
   while ( defined( my $file = readdir( $dh ) ) ) {
@@ -584,15 +596,19 @@ sub copy_file_to_webdav_folder {
     return;
   }
 
+  $form->{attachment_filename} ||= $form->generate_attachment_filename;
+
   my $timestamp =  get_current_formatted_time();
-  my $new_file  =  File::Spec->catfile($form->{cwd}, $webdav_folder, $form->generate_attachment_filename());
+  my $new_file  =  File::Spec->catfile($form->{cwd}, $webdav_folder, $form->{attachment_filename});
   $new_file =~ s{(.*)\.}{$1$timestamp\.};
 
   if (!File::Copy::copy($current_file, $new_file)) {
     $::lxdebug->message(LXDebug::WARN(), "Copy file from $current_file to $new_file failed: $ERRNO");
-    $::form->error($::locale->text("Copy file from #1 to #2 failed: #3", $current_file, $new_file, $ERRNO));
+    $::lxdebug->leave_sub();
+    return $::locale->text("Copy file from #1 to #2 failed: #3", $current_file, $new_file, $ERRNO);
   }
 
+  return;
   $::lxdebug->leave_sub();
 }
 
@@ -631,6 +647,11 @@ can be set to C<1> (only strip those at the end of C<$text>) or
 C<full> (replace consecutive line feed/carriage return characters in
 the middle by a single space and remove tailing line feed/carriage
 return characters).
+
+=item C<save_email_status>
+
+Adds sending information to internal notes.
+Does nothing if the client config email_journal is enabled.
 
 =back
 

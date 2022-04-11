@@ -10,8 +10,8 @@ use Exporter qw(import);
 our @EXPORT_OK = qw(
   html_tag input_tag hidden_tag javascript man_days_tag name_to_id select_tag
   checkbox_tag button_tag submit_tag ajax_submit_tag input_number_tag
-  stringify_attributes restricted_html textarea_tag link_tag date_tag
-);
+  stringify_attributes textarea_tag link_tag date_tag
+  div_tag radio_button_tag img_tag);
 our %EXPORT_TAGS = (ALL => \@EXPORT_OK);
 
 use Carp;
@@ -46,6 +46,15 @@ sub _J {
   return $string;
 }
 
+sub join_values {
+  my ($name, $value) = @_;
+  my $spacer = $name eq 'class' ? ' ' : ''; # join classes with spaces, everything else as is
+
+  ref $value && 'ARRAY' eq ref $value
+  ? join $spacer, map { join_values($name, $_) } @$value
+  : $value
+}
+
 sub stringify_attributes {
   my (%params) = @_;
 
@@ -54,6 +63,7 @@ sub stringify_attributes {
     next unless $name;
     next if $_valueless_attributes{$name} && !$value;
     $value = '' if !defined($value);
+    $value = join_values($name, $value) if ref $value && 'ARRAY' eq ref $value;
     push @result, $_valueless_attributes{$name} ? escape($name) : escape($name) . '="' . escape($value) . '"';
   }
 
@@ -111,6 +121,10 @@ sub select_tag {
 
   _set_id_attribute(\%attributes, $name);
 
+  $collection         = [] if defined($collection) && !ref($collection) && ($collection eq '');
+
+  my $with_filter     = delete($attributes{with_filter});
+  my $fil_placeholder = delete($attributes{filter_placeholder});
   my $value_key       = delete($attributes{value_key})   || 'id';
   my $title_key       = delete($attributes{title_key})   || $value_key;
   my $default_key     = delete($attributes{default_key}) || 'selected';
@@ -206,11 +220,35 @@ sub select_tag {
     } @{ $collection };
   }
 
-  html_tag('select', $code, %attributes, name => $name);
+  my $select_html = html_tag('select', $code, %attributes, name => $name);
+
+  if ($with_filter) {
+    my $input_style;
+
+    if (($attributes{style} // '') =~ m{width: *(\d+) *px}i) {
+      $input_style = "width: " . ($1 - 22) . "px";
+    }
+
+    my $input_html = html_tag(
+      'input', undef,
+      autocomplete     => 'off',
+      type             => 'text',
+      id               => $attributes{id} . '_filter',
+      'data-select-id' => $attributes{id},
+      (placeholder     => $fil_placeholder) x !!$fil_placeholder,
+      (style           => $input_style)     x !!$input_style,
+    );
+    $select_html = html_tag('div', $input_html . $select_html, class => "filtered_select");
+  }
+
+  return $select_html;
 }
 
 sub checkbox_tag {
   my ($name, %attributes) = @_;
+
+  my %label_attributes = map { (substr($_, 6) => $attributes{$_}) } grep { m{^label_} } keys %attributes;
+  delete @attributes{grep { m{^label_} } keys %attributes};
 
   _set_id_attribute(\%attributes, $name);
 
@@ -228,8 +266,33 @@ sub checkbox_tag {
   my $code  = '';
   $code    .= hidden_tag($name, 0, %attributes, id => $attributes{id} . '_hidden') if $for_submit;
   $code    .= html_tag('input', undef,  %attributes, name => $name, type => 'checkbox');
-  $code    .= html_tag('label', $label, for => $attributes{id}) if $label;
+  $code    .= html_tag('label', $label, for => $attributes{id}, %label_attributes) if $label;
   $code    .= javascript(qq|\$('#$attributes{id}').checkall('$checkall');|) if $checkall;
+
+  return $code;
+}
+
+sub radio_button_tag {
+  my ($name, %attributes) = @_;
+
+  my %label_attributes = map { (substr($_, 6) => $attributes{$_}) } grep { m{^label_} } keys %attributes;
+  delete @attributes{grep { m{^label_} } keys %attributes};
+
+  $attributes{value}   = 1 unless exists $attributes{value};
+
+  _set_id_attribute(\%attributes, $name, 1);
+  my $label            = delete $attributes{label};
+
+  _set_id_attribute(\%attributes, $name . '_' . $attributes{value});
+
+  if ($attributes{checked}) {
+    $attributes{checked} = 'checked';
+  } else {
+    delete $attributes{checked};
+  }
+
+  my $code  = html_tag('input', undef,  %attributes, name => $name, type => 'radio');
+  $code    .= html_tag('label', $label, for => $attributes{id}, %label_attributes) if $label;
 
   return $code;
 }
@@ -242,7 +305,7 @@ sub button_tag {
 
   $onclick = 'if (!confirm("'. _J(delete($attributes{confirm})) .'")) return false; ' . $onclick if $attributes{confirm};
 
-  html_tag('input', undef, %attributes, value => $value, onclick => $onclick);
+  html_tag('input', undef, %attributes, value => $value, (onclick => $onclick)x!!$onclick);
 }
 
 sub submit_tag {
@@ -306,13 +369,6 @@ sub _set_id_attribute {
 
 my $html_restricter;
 
-sub restricted_html {
-  my ($value) = @_;
-
-  $html_restricter ||= SL::HTML::Restrict->create;
-  return $html_restricter->process($value);
-}
-
 sub textarea_tag {
   my ($name, $content, %attributes) = @_;
 
@@ -345,13 +401,27 @@ sub date_tag {
   $::request->layout->add_javascripts('kivi.Validator.js');
   $::request->presenter->need_reinit_widgets($params{id});
 
+  $params{'data-validate'} = join(' ', "date", grep { $_ } (delete $params{'data-validate'}));
+
   input_tag(
     $name, blessed($value) ? $value->to_lxoffice : $value,
     size   => 11,
-    "data-validate" => "date",
     %params,
     %class, @onchange,
   );
+}
+
+sub div_tag {
+  my ($content, %params) = @_;
+  return html_tag('div', $content, %params);
+}
+
+sub img_tag {
+  my (%params) = @_;
+
+  $params{alt} ||= '';
+
+  return html_tag('img', undef, %params);
 }
 
 1;
@@ -422,10 +492,6 @@ Converts a name to a HTML id by replacing various characters.
 Creates a string from all elements in C<%items> suitable for usage as
 HTML tag attributes. Keys and values are HTML escaped even though keys
 must not contain non-ASCII characters for browsers to accept them.
-
-=item C<restricted_html $html>
-
-Returns HTML stripped of unknown tags. See L<SL::HTML::Restrict>.
 
 =back
 
@@ -503,11 +569,27 @@ C<name_to_id($name)>. The tag's C<value> defaults to C<1>.
 
 If C<%attributes> contains a key C<label> then a HTML 'label' tag is
 created with said C<label>. No attribute named C<label> is created in
-that case.
+that case. Furthermore, all attributes whose names start with
+C<label_> become attributes on the label tag without the C<label_>
+prefix. For example, C<label_style='#ff0000'> will be turned into
+C<style='#ff0000'> on the label tag, causing the text to become red.
 
 If C<%attributes> contains a key C<checkall> then the value is taken as a
 JQuery selector and clicking this checkbox will also toggle all checkboxes
 matching the selector.
+
+=item C<radio_button_tag $name, %attributes>
+
+Creates a HTML 'input type=radio' tag named C<$name> with arbitrary
+HTML attributes from C<%attributes>. The tag's C<value> defaults to
+C<1>. The tag's C<id> defaults to C<name_to_id($name . "_" . $value)>.
+
+If C<%attributes> contains a key C<label> then a HTML 'label' tag is
+created with said C<label>. No attribute named C<label> is created in
+that case. Furthermore, all attributes whose names start with
+C<label_> become attributes on the label tag without the C<label_>
+prefix. For example, C<label_style='#ff0000'> will be turned into
+C<style='#ff0000'> on the label tag, causing the text to become red.
 
 =item C<select_tag $name, \@collection, %attributes>
 

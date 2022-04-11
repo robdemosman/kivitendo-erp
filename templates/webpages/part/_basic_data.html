@@ -19,7 +19,7 @@
             <table id="ic3">
              <tr>
               <th align="right">[% 'Part Number' | $T8 %]</th>
-              <td>[% L.input_tag("part.partnumber", SELF.part.partnumber, size=40, class="initial_focus") %]</td>
+              <td>[% L.input_tag("part.partnumber", SELF.part.partnumber, size=40, class="initial_focus", "data-validate"="trimmed_whitespaces") %]</td>
              </tr>
              <tr>
               <th align="right">[% 'Part Classification' | $T8 %]</th>
@@ -28,12 +28,12 @@
              <tr>
               <th align="right">[% 'Part Description' | $T8 %]</th>
               <td>
-               [% L.areainput_tag("part.description", SELF.part.description, size=40) %]</td>
+               [% L.areainput_tag("part.description", SELF.part.description, size=40) %]
               </td>
              </tr>
              <tr>
                <th align="right">[% 'EAN-Code' | $T8 %]</th>
-               <td>[% L.input_tag("part.ean", SELF.part.ean, size=40) %]</td>
+               <td>[% L.input_tag("part.ean", SELF.part.ean, size=40, "data-validate"="trimmed_whitespaces") %]</td>
              </tr>
              <tr>
               [%- IF SELF.all_partsgroups.size %]
@@ -75,6 +75,18 @@
                  <textarea id="part.formel" name="part.formel" rows="[% HTML.escape(notes_rows) %]" cols="30" wrap="soft" class="tooltipster-html" title="[% 'The formula needs the following syntax:<br>For regular article:<br>Variablename= Variable Unit;<br>Variablename2= Variable2 Unit2;<br>...<br>###<br>Variable + ( Variable2 / Variable )<br><b>Please be beware of the spaces in the formula</b><br>' | $T8 %]">[% HTML.escape(SELF.part.formel) %]</textarea>
                </td>
              </tr>
+             [% IF CUSTOM_VARIABLES_FIRST_TAB %]
+              <tr><td>[% 'Unchecked custom variables will not appear in orders and invoices.' | $T8 %]</td></tr>
+               [%- FOREACH var = CUSTOM_VARIABLES_FIRST_TAB %]
+               <tr>
+                <td align="left" valign="top">[% var.VALID_BOX %]
+                [%- IF !var.partsgroup_filtered %]
+                  [% HTML.escape(var.description) %]
+                [%- END %]
+               </tr>
+               <tr><td>[% var.HTML_CODE %]</td></tr>
+               [%- END %]
+             [% END %]
             </table>
            </td>
           </tr>
@@ -84,9 +96,9 @@
         <td>
          <table id="ic5">
           <tr>
-           <th align="right" nowrap="true">[% 'Updated' | $T8 %]</th>
+           <th align="right" nowrap="true">[% 'Price updated' | $T8 %]</th>
            <td>
-           [% SELF.part.priceupdate.to_kivitendo | html %]
+           [% SELF.part.last_price_update.valid_from.to_kivitendo | html %]
            </td>
           </tr>
 
@@ -112,7 +124,7 @@
           <tr>
            <th align="right">[% 'Price Factor' | $T8 %]</th>
            <td>
-            [%- L.select_tag('part.price_factor_id', SELF.all_price_factors, default=SELF.part.price_factor_id, title_key='description', value_key='id', with_empty=1) %]</td>
+            [%- L.select_tag('part.price_factor_id', SELF.all_price_factors, default=SELF.part.price_factor_id, title_key='description', value_key='id', with_empty=1) %]
            </td>
           </tr>
           [%- END %]
@@ -121,7 +133,7 @@
            <th align="right" nowrap="true">[% 'Unit' | $T8 %]</th>
            <td>
             [%- IF !SELF.part.id or SELF.part.orphaned # same logic as unit_changable %]
-            [%- L.select_tag('part.unit', SELF.all_units, default=SELF.part.unit, title_key='name', value_key='name') %]</td>
+            [%- L.select_tag('part.unit', SELF.all_units, default=SELF.part.unit, title_key='name', value_key='name') %]
             [%- ELSE %]
             [% L.hidden_tag('part.unit', SELF.part.unit) %] [% HTML.escape(SELF.part.unit) %]
             [%- END %]
@@ -133,7 +145,7 @@
            <th align="right" nowrap="true">[% 'Weight' | $T8 %]</th>
            <td>
             [%- IF SELF.part.is_assembly %]
-              [% LxERP.format_amount(SELF.part.weight) %]
+              <span id="items_weight_sum_basic">[% LxERP.format_amount(SELF.part.weight) %]</span>
             [% ELSE %]
               [% L.input_tag('part.weight_as_number', SELF.part.weight_as_number, size=10, class='reformat_number numeric') %]
             [% END %]
@@ -207,29 +219,22 @@
       <table id="ic6">
        <tr>
         <th align="right" nowrap>[% 'Image' | $T8 %]</th>
-        <td>[% L.input_tag("part.image", SELF.part.image, size=40) %]</td>
+        <td>[% L.input_tag("part.image", SELF.part.image, size=40, "data-validate"="trimmed_whitespaces") %]</td>
         <th align="right" nowrap>[% 'Microfiche' | $T8 %]</th>
-        <td>[% L.input_tag("part.microfiche", SELF.part.microfiche, size=20) %]</td>
+        <td>[% L.input_tag("part.microfiche", SELF.part.microfiche, size=20, "data-validate"="trimmed_whitespaces") %]</td>
        </tr>
        <tr>
         <th align="right" nowrap>[% 'Drawing' | $T8 %]</th>
-        <td>[% L.input_tag("part.drawing", SELF.part.drawing, size=40) %]</td>
+        <td>[% L.input_tag("part.drawing", SELF.part.drawing, size=40, "data-validate"="trimmed_whitespaces") %]</td>
        </tr>
       </table>
      </td>
     </tr>
 
-<div id="pricegroups">
  [% PROCESS 'part/_pricegroup_prices.html' %]
-</div>
-
-<div id="customerprices">
  [% PROCESS 'part/_customerprices.html' %]
-</div>
 [%- UNLESS SELF.part.is_assembly %]
-<div id="makemodel">
  [% PROCESS 'part/_makemodel.html' %]
-</div>
 [% END %]
 
   <tr>

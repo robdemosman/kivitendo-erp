@@ -163,8 +163,6 @@ sub gather_bank_transactions_and_proposals {
       }
       next if $found;
       # batch transaction has no remotename !!
-    } else {
-      next unless $bt->{remote_name};  # bank has no name, usually fees, use create invoice to assign
     }
 
     # try to match the current $bt to each of the open_invoices, saving the
@@ -206,13 +204,10 @@ sub gather_bank_transactions_and_proposals {
   # to qualify as a proposal there has to be
   # * agreement >= 5  TODO: make threshold configurable in configuration
   # * there must be only one exact match
-  # * depending on whether sales or purchase the amount has to have the correct sign (so Gutschriften don't work?)
   my $proposal_threshold = 5;
   my @otherproposals = grep {
        ($_->{agreement} >= $proposal_threshold)
     && (1 == scalar @{ $_->{proposals} })
-    && (@{ $_->{proposals} }[0]->is_sales ? abs(@{ $_->{proposals} }[0]->amount - $_->amount) < 0.01
-                                          : abs(@{ $_->{proposals} }[0]->amount + $_->amount) < 0.01)
   } @{ $bank_transactions };
 
   push @proposals, @otherproposals;
@@ -279,12 +274,14 @@ sub action_create_invoice {
 
   my $templates_ap = SL::DB::Manager::RecordTemplate->get_all(
     where        => [ template_type => 'ap_transaction' ],
+    sort_by      => [ qw(template_name) ],
     with_objects => [ qw(employee vendor) ],
   );
   my $templates_gl = SL::DB::Manager::RecordTemplate->get_all(
     query        => [ template_type => 'gl_transaction',
                       chart_id      => SL::DB::Manager::BankAccount->find_by(id => $self->transaction->local_bank_account_id)->chart_id,
                     ],
+    sort_by      => [ qw(template_name) ],
     with_objects => [ qw(employee record_template_items) ],
   );
 
@@ -683,6 +680,7 @@ sub save_single_bank_transaction {
                           source        => $source,
                           memo          => $memo,
                           skonto_amount => $free_skonto_amount,
+                          bt_id         => $bt_id,
                           transdate     => $bank_transaction->valutadate->to_kivitendo);
     # ... and record the origin via BankTransactionAccTrans
     if (scalar(@acc_ids) < 2) {
@@ -853,6 +851,7 @@ sub make_filter_summary {
     [ $filter->{"valutadate:date::le"},     $::locale->text('Valutadate') . " " . $::locale->text('To Date')   ],
     [ $filter->{"amount:number"},           $::locale->text('Amount')                                          ],
     [ $filter->{"bank_account_id:integer"}, $::locale->text('Local bank account')                              ],
+    [ $filter->{"remote_name:substr::ilike"}, $::locale->text('Remote name')                                   ],
   );
 
   for (@filters) {

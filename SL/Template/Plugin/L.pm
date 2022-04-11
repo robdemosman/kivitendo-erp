@@ -82,45 +82,15 @@ sub link                     { return _call_presenter('link_tag',               
 sub input_number_tag         { return _call_presenter('input_number_tag',         @_); }
 sub textarea_tag             { return _call_presenter('textarea_tag',             @_); }
 sub date_tag                 { return _call_presenter('date_tag',                 @_); }
+sub div_tag                  { return _call_presenter('div_tag',                  @_); }
+sub radio_button_tag         { return _call_presenter('radio_button_tag',         @_); }
+sub img_tag                  { return _call_presenter('img_tag',                  @_); }
+sub restricted_html          { return _call_presenter('restricted_html',          @_); }
+sub stripped_html            { return _call_presenter('stripped_html',            @_); }
 
 sub _set_id_attribute {
   my ($attributes, $name, $unique) = @_;
   SL::Presenter::Tag::_set_id_attribute($attributes, $name, $unique);
-}
-
-sub img_tag {
-  my ($self, %options) = _hashify(1, @_);
-
-  $options{alt} ||= '';
-
-  return $self->html_tag('img', undef, %options);
-}
-
-sub radio_button_tag {
-  my ($self, $name, %attributes) = _hashify(2, @_);
-
-  $attributes{value}   = 1 unless exists $attributes{value};
-
-  _set_id_attribute(\%attributes, $name, 1);
-  my $label            = delete $attributes{label};
-
-  _set_id_attribute(\%attributes, $name . '_' . $attributes{value});
-
-  if ($attributes{checked}) {
-    $attributes{checked} = 'checked';
-  } else {
-    delete $attributes{checked};
-  }
-
-  my $code  = $self->html_tag('input', undef,  %attributes, name => $name, type => 'radio');
-  $code    .= $self->html_tag('label', $label, for => $attributes{id}) if $label;
-
-  return $code;
-}
-
-sub div_tag {
-  my ($self, $content, @slurp) = @_;
-  return $self->html_tag('div', $content, @slurp);
 }
 
 sub ul_tag {
@@ -304,9 +274,13 @@ JAVASCRIPT
     $filter    .= ".map(function(idx, str) { return str.replace('$params{with}_', ''); })";
 
     my $params_js = $params{params} ? qq| + ($params{params})| : '';
+    my $ajax_return = '';
+    if ($params{ajax_return}) {
+      $ajax_return = 'kivi.eval_json_result';
+    }
 
     $stop_event = <<JAVASCRIPT;
-        \$.post('$params{url}'${params_js}, { '${as}[]': \$(\$('${selector}').sortable('toArray'))${filter}.toArray() });
+        \$.post('$params{url}'${params_js}, { '${as}[]': \$(\$('${selector}').sortable('toArray'))${filter}.toArray() }, $ajax_return);
 JAVASCRIPT
   }
 
@@ -484,16 +458,6 @@ tag's C<id> defaults to C<name_to_id($name)>.
 Creates a date input field, with an attached javascript that will open a
 calendar on click.
 
-=item C<radio_button_tag $name, %attributes>
-
-Creates a HTML 'input type=radio' tag named C<$name> with arbitrary
-HTML attributes from C<%attributes>. The tag's C<value> defaults to
-C<1>. The tag's C<id> defaults to C<name_to_id($name . "_" . $value)>.
-
-If C<%attributes> contains a key C<label> then a HTML 'label' tag is
-created with said C<label>. No attribute named C<label> is created in
-that case.
-
 =item C<javascript_tag $file1, $file2, $file3...>
 
 Creates a HTML 'E<lt>script type="text/javascript" src="..."E<gt>'
@@ -566,8 +530,12 @@ C<%params> can contain the following entries:
 =item C<url>
 
 The URL to POST an AJAX request to after a dragged element has been
-dropped. The AJAX request's return value is ignored. If given then
+dropped. The AJAX request's return value is ignored by default. If given then
 C<$params{with}> must be given as well.
+
+=item C<ajax_return>
+
+If trueish then the AJAX request's return is accepted.
 
 =item C<with>
 

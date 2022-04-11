@@ -19,12 +19,17 @@ namespace('kivi.GL', function(ns) {
 
     $.ajax({
       url: 'gl.pl?action=get_tax_dropdown',
-      data: { accno_id:  $(obj).val(),
-              transdate: $('#transdate').val() },
+      data: { accno_id:     $(obj).val(),
+              transdate:    $('#transdate').val(),
+              deliverydate: $('#deliverydate').val() },
       dataType: 'html',
       success: function (new_html) {
         $("#taxchart_" + row).html(new_html);
       }
     });
   };
+});
+
+$(function() {
+  kivi.File.doc_tab_init('gl_tabs', 'ui-tabs-docs', $('#id').val(), 'gl_transaction');
 });

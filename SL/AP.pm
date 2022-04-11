@@ -39,6 +39,7 @@ use SL::DATEV qw(:CONSTANTS);
 use SL::DBUtils;
 use SL::IO;
 use SL::MoreCommon;
+use SL::DB::ApGl;
 use SL::DB::Default;
 use SL::DB::Draft;
 use SL::DB::Order;
@@ -139,19 +140,20 @@ sub _post_transaction {
 
     $query = qq|UPDATE ap SET invnumber = ?,
                 transdate = ?, ordnumber = ?, vendor_id = ?, taxincluded = ?,
-                amount = ?, duedate = ?, paid = ?, netamount = ?,
+                amount = ?, duedate = ?, deliverydate = ?, tax_point = ?, paid = ?, netamount = ?,
                 currency_id = (SELECT id FROM currencies WHERE name = ?), notes = ?, department_id = ?, storno = ?, storno_id = ?,
-                globalproject_id = ?, direct_debit = ?
+                globalproject_id = ?, direct_debit = ?, payment_id = ?, transaction_description = ?
                WHERE id = ?|;
     @values = ($form->{invnumber}, conv_date($form->{transdate}),
                   $form->{ordnumber}, conv_i($form->{vendor_id}),
                   $form->{taxincluded} ? 't' : 'f', $form->{invtotal},
-                  conv_date($form->{duedate}), $form->{invpaid},
-                  $form->{netamount},
+                  conv_date($form->{duedate}), conv_date($form->{deliverydate}), conv_date($form->{tax_point}),
+                  $form->{invpaid}, $form->{netamount},
                   $form->{currency}, $form->{notes},
                   conv_i($form->{department_id}), $form->{storno},
                   $form->{storno_id}, conv_i($form->{globalproject_id}),
                   $form->{direct_debit} ? 't' : 'f',
+                  conv_i($form->{payment_id}), $form->{transaction_description},
                   $form->{id});
     do_query($form, $dbh, $query, @values);
 
@@ -405,6 +407,8 @@ sub _post_transaction {
     SL::DB::Manager::Draft->delete_all(where => [ id => delete($form->{draft_id}) ]);
   }
 
+  # hook for taxkey 94
+  $self->_reverse_charge($myconfig, $form);
   # safety check datev export
   if ($::instance_conf->get_datev_check_on_ap_transaction) {
     my $datev = SL::DATEV->new(
@@ -421,12 +425,86 @@ sub _post_transaction {
   return 1;
 }
 
+sub _reverse_charge {
+  my ($self, $myconfig, $form) = @_;
+
+  # delete previous bookings, if they exists (repost)
+  my $ap_gl = SL::DB::Manager::ApGl->get_first(where => [ ap_id => $form->{id} ]);
+  my $gl_id = ref $ap_gl eq 'SL::DB::ApGl' ? $ap_gl->gl_id : undef;
+
+  SL::DB::Manager::GLTransaction->delete_all(where => [ id    => $gl_id ])       if $gl_id;
+  SL::DB::Manager::ApGl->         delete_all(where => [ ap_id => $form->{id} ])  if $gl_id;
+  SL::DB::Manager::RecordLink->   delete_all(where => [ from_table => 'ap', to_table => 'gl', from_id => $form->{id} ]);
+
+  my ($i, $current_transaction);
+
+  for $i (1 .. $form->{rowcount}) {
+
+    my $tax = SL::DB::Manager::Tax->get_first( where => [id => $form->{"tax_id_$i"}, '!reverse_charge_chart_id' => undef ]);
+    next unless ref $tax eq 'SL::DB::Tax';
+
+    # gl booking
+    my ($credit, $debit);
+    $credit   = SL::DB::Manager::Chart->find_by(id => $tax->chart_id);
+    $debit    = SL::DB::Manager::Chart->find_by(id => $tax->reverse_charge_chart_id);
+
+    croak("No such Chart ID" . $tax->chart_id)          unless ref $credit eq 'SL::DB::Chart';
+    croak("No such Chart ID" . $tax->reverse_chart_id)  unless ref $debit  eq 'SL::DB::Chart';
+
+    my ($tmpnetamount, $tmptaxamount) = $form->calculate_tax($form->{"amount_$i"}, $tax->rate, $form->{taxincluded}, 2);
+    $current_transaction = SL::DB::GLTransaction->new(
+          employee_id    => $form->{employee_id},
+          transdate      => $form->{transdate},
+          description    => $form->{notes} || $form->{invnumber},
+          reference      => $form->{invnumber},
+          department_id  => $form->{department_id} ? $form->{department_id} : undef,
+          imported       => 0, # not imported
+          taxincluded    => 0,
+        )->add_chart_booking(
+          chart  => $tmptaxamount > 0 ? $debit : $credit,
+          debit  => abs($tmptaxamount),
+          source => "Reverse Charge for " . $form->{invnumber},
+          tax_id => 0,
+        )->add_chart_booking(
+          chart  => $tmptaxamount > 0 ? $credit : $debit,
+          credit => abs($tmptaxamount),
+          source => "Reverse Charge for " . $form->{invnumber},
+          tax_id => 0,
+      )->post;
+    # add a stable link from ap to gl
+    my %props_gl = (
+        ap_id => $form->{id},
+        gl_id => $current_transaction->id,
+      );
+    SL::DB::ApGl->new(%props_gl)->save;
+    # Record a record link from ap to gl
+    my %props_rl = (
+        from_table => 'ap',
+        from_id    => $form->{id},
+        to_table   => 'gl',
+        to_id      => $current_transaction->id,
+      );
+    SL::DB::RecordLink->new(%props_rl)->save;
+  }
+}
+
 sub delete_transaction {
   $main::lxdebug->enter_sub();
 
   my ($self, $myconfig, $form) = @_;
 
   SL::DB->client->with_transaction(sub {
+
+    # if tax 94 reverse charge, clear all GL bookings and links
+    my $ap_gl = SL::DB::Manager::ApGl->get_first(where => [ ap_id => $form->{id} ]);
+    my $gl_id = ref $ap_gl eq 'SL::DB::ApGl' ? $ap_gl->gl_id : undef;
+
+    SL::DB::Manager::GLTransaction->delete_all(where => [ id    => $gl_id ])       if $gl_id;
+    SL::DB::Manager::ApGl->         delete_all(where => [ ap_id => $form->{id} ])  if $gl_id;
+    SL::DB::Manager::RecordLink->   delete_all(where => [ from_table => 'ap', to_table => 'gl', from_id => $form->{id} ]);
+    # done gl delete for tax 94 case
+
+    # begin ap delete
     my $query = qq|DELETE FROM ap WHERE id = ?|;
     do_query($form, SL::DB->client->dbh, $query, $form->{id});
     1;
@@ -449,6 +527,7 @@ sub ap_transactions {
     qq|SELECT a.id, a.invnumber, a.transdate, a.duedate, a.amount, a.paid, | .
     qq|  a.ordnumber, v.name, a.invoice, a.netamount, a.datepaid, a.notes, | .
     qq|  a.globalproject_id, a.storno, a.storno_id, a.direct_debit, | .
+    qq|  a.transaction_description, a.itime::DATE AS insertdate, | .
     qq|  pr.projectnumber AS globalprojectnumber, | .
     qq|  e.name AS employee, | .
     qq|  v.vendornumber, v.country, v.ustid, | .
@@ -461,7 +540,14 @@ sub ap_transactions {
            WHERE ch.link ~ 'AP[[:>:]]'
             AND at.trans_id = a.id
             LIMIT 1
-          ) AS charts } .
+          ) AS charts, } .
+    qq{  ( SELECT ch.accno || ' -- ' || ch.description
+           FROM acc_trans at
+           LEFT JOIN chart ch ON ch.id = at.chart_id
+           WHERE ch.link ~ 'AP_amount'
+            AND at.trans_id = a.id
+            LIMIT 1
+          ) AS debit_chart } .
     qq|FROM ap a | .
     qq|JOIN vendor v ON (a.vendor_id = v.id) | .
     qq|LEFT JOIN contacts cp ON (a.cp_id = cp.cp_id) | .
@@ -478,16 +564,16 @@ sub ap_transactions {
   # Permissions:
   # - Always return invoices & AP transactions for projects the employee has "view invoices" permissions for, no matter what the other rules say.
   # - Exclude AP transactions if no permissions for them exist.
-  # - Limit to own invoices unless may edit all invoices.
-  # - If may edit all, allow filtering by employee.
+  # - Limit to own invoices unless may edit all invoices or view invoices is allowed.
+  # - If may edit all or view invoices is allowed, allow filtering by employee.
   my (@permission_where, @permission_values);
 
-  if ($::auth->assert('vendor_invoice_edit', 1)) {
+  if ($::auth->assert('vendor_invoice_edit', 1) || $::auth->assert('purchase_invoice_view', 1)) {
     if (!$::auth->assert('show_ap_transactions', 1)) {
       push @permission_where, "NOT invoice = 'f'"; # remove ap transactions from Purchase -> Reports -> Invoices
     }
 
-    if (!$::auth->assert('purchase_all_edit', 1)) {
+    if (!$::auth->assert('purchase_all_edit', 1) && !$::auth->assert('purchase_invoice_view', 1)) {
       # only show own invoices
       push @permission_where,  "a.employee_id = ?";
       push @permission_values, SL::DB::Manager::Employee->current->id;
@@ -500,7 +586,7 @@ sub ap_transactions {
     }
   }
 
-  if (@permission_where || !$::auth->assert('vendor_invoice_edit', 1)) {
+  if (@permission_where || (!$::auth->assert('vendor_invoice_edit', 1) && !$::auth->assert('purchase_invoice_view', 1))) {
     my $permission_where_str = @permission_where ? "OR (" . join(" AND ", map { "($_)" } @permission_where) . ")" : "";
     $where .= qq|
       AND (   (a.globalproject_id IN (
@@ -532,8 +618,16 @@ sub ap_transactions {
     $where .= " AND a.ordnumber ILIKE ?";
     push(@values, like($form->{ordnumber}));
   }
+  if ($form->{taxzone_id}) {
+    $where .= " AND a.taxzone_id = ?";
+    push(@values, $form->{taxzone_id});
+  }
+  if ($form->{transaction_description}) {
+    $where .= " AND a.transaction_description ILIKE ?";
+    push(@values, like($form->{transaction_description}));
+  }
   if ($form->{notes}) {
-    $where .= " AND lower(a.notes) LIKE ?";
+    $where .= " AND a.notes ILIKE ?";
     push(@values, like($form->{notes}));
   }
   if ($form->{project_id}) {
@@ -555,6 +649,14 @@ sub ap_transactions {
   if ($form->{transdateto}) {
     $where .= " AND a.transdate <= ?";
     push(@values, trim($form->{transdateto}));
+  }
+  if ($form->{duedatefrom}) {
+    $where .= " AND a.duedate >= ?";
+    push(@values, trim($form->{duedatefrom}));
+  }
+  if ($form->{duedateto}) {
+    $where .= " AND a.duedate <= ?";
+    push(@values, trim($form->{duedateto}));
   }
   if ($form->{open} || $form->{closed}) {
     unless ($form->{open} && $form->{closed}) {
@@ -600,7 +702,7 @@ SQL
   my $sortdir   = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
   my $sortorder = join(', ', map { "$_ $sortdir" } @a);
 
-  if (grep({ $_ eq $form->{sort} } qw(transdate id invnumber ordnumber name netamount tax amount paid datepaid due duedate notes employee transaction_description direct_debit department))) {
+  if (grep({ $_ eq $form->{sort} } qw(transdate id invnumber ordnumber name netamount tax amount paid datepaid due duedate notes employee transaction_description direct_debit department taxzone))) {
     $sortorder = $form->{sort} . " $sortdir";
   }
 
@@ -885,7 +987,7 @@ sub _storno {
   $storno_row->{netamount} *= -1;
   $storno_row->{paid}       = $storno_row->{amount};
 
-  delete @$storno_row{qw(itime mtime)};
+  delete @$storno_row{qw(itime mtime gldate)};
 
   $query = sprintf 'INSERT INTO ap (%s) VALUES (%s)', join(', ', keys %$storno_row), join(', ', map '?', values %$storno_row);
   do_query($form, $dbh, $query, (values %$storno_row));
@@ -905,7 +1007,7 @@ sub _storno {
   }
 
   for my $row (@$rowref) {
-    delete @$row{qw(itime mtime link acc_trans_id)};
+    delete @$row{qw(itime mtime link acc_trans_id gldate)};
     $query = sprintf 'INSERT INTO acc_trans (%s) VALUES (%s)', join(', ', keys %$row), join(', ', map '?', values %$row);
     $row->{trans_id}   = $new_id;
     $row->{amount}    *= -1;

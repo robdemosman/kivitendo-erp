@@ -52,8 +52,10 @@ use SL::DB::Part;
 use SL::DB::Vendor;
 use SL::DB;
 use SL::GenericTranslations;
+use SL::Helper::UserPreferences::DisplayPreferences;
 use SL::Helper::UserPreferences::PositionsScrollbar;
 use SL::Helper::UserPreferences::PartPickerSearch;
+use SL::Helper::UserPreferences::TimeRecording;
 use SL::Helper::UserPreferences::UpdatePositions;
 
 use strict;
@@ -106,7 +108,7 @@ sub get_account {
 
     # get the taxkeys of the account
     $form->{ACCOUNT_TAXKEYS} = [];
-    foreach my $taxkey ( @{ $chart_obj->taxkeys } ) {
+    foreach my $taxkey ( sort { $b->startdate <=> $a->startdate } @{ $chart_obj->taxkeys } ) {
       push @{ $form->{ACCOUNT_TAXKEYS} }, { id             => $taxkey->id,
                                             chart_id       => $taxkey->chart_id,
                                             tax_id         => $taxkey->tax_id,
@@ -546,12 +548,20 @@ sub positions_show_update_button {
   SL::Helper::UserPreferences::UpdatePositions->new()->get_show_update_button();
 }
 
+sub time_recording_use_duration {
+  SL::Helper::UserPreferences::TimeRecording->new()->get_use_duration();
+}
+
+sub longdescription_dialog_size_percentage {
+  SL::Helper::UserPreferences::DisplayPreferences->new()->get_longdescription_dialog_size_percentage();
+}
+
 sub save_preferences {
   $main::lxdebug->enter_sub();
 
   my ($self, $form) = @_;
 
-  my $employee = SL::DB::Manager::Employee->find_by(login => $::myconfig{login});
+  my $employee = SL::DB::Manager::Employee->current;
   $employee->update_attributes(name => $form->{name});
 
   my $user = SL::DB::Manager::AuthUser->find_by(login => $::myconfig{login});
@@ -582,6 +592,12 @@ sub save_preferences {
   }
   if (exists $form->{positions_show_update_button}) {
     SL::Helper::UserPreferences::UpdatePositions->new()->store_show_update_button($form->{positions_show_update_button})
+  }
+  if (exists $form->{time_recording_use_duration}) {
+    SL::Helper::UserPreferences::TimeRecording->new()->store_use_duration($form->{time_recording_use_duration})
+  }
+  if (exists $form->{longdescription_dialog_size_percentage}) {
+    SL::Helper::UserPreferences::DisplayPreferences->new()->store_longdescription_dialog_size_percentage($form->{longdescription_dialog_size_percentage})
   }
 
   $main::lxdebug->leave_sub();
@@ -1207,7 +1223,7 @@ sub _save_tax {
                   chart_categories,
                   id
                 )
-                VALUES (?, ?, ?, ?, (SELECT accno FROM chart WHERE id = ?), ?, ?,  ?, ?)|;
+                VALUES (?, ?, ?, ?, ?, ?,  ?, ?)|;
   }
   push(@values, $form->{id});
   do_query($form, $dbh, $query, @values);
@@ -1240,6 +1256,8 @@ sub save_warehouse {
   $main::lxdebug->enter_sub();
 
   my ($self, $myconfig, $form) = @_;
+
+  croak('Need at least one new bin') unless $form->{number_of_new_bins} > 0;
 
   SL::DB->client->with_transaction(sub {
     my $dbh = SL::DB->client->dbh;

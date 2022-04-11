@@ -21,6 +21,25 @@ namespace('kivi.CustomerVendor', function(ns) {
     });
   };
 
+  this.selectAdditionalBillingAddress = function(params) {
+    var additionalBillingAddressId = $('#additional_billing_address_id').val();
+    var url                        = 'controller.pl?action=CustomerVendor/ajaj_get_additional_billing_address&id='+ $('#cv_id').val() +'&db='+ $('#db').val() +'&additional_billing_address_id='+ additionalBillingAddressId;
+
+    $.getJSON(url, function(data) {
+      var additional_billing_address = data.additional_billing_address;
+      for (var key in additional_billing_address)
+        $('#additional_billing_address_'+ key).val(additional_billing_address[key])
+
+      if ( additionalBillingAddressId )
+        $('#action_delete_additional_billing_address').show();
+      else
+        $('#action_delete_additional_billing_address').hide();
+
+      if ( params.onFormSet )
+        params.onFormSet();
+    });
+  };
+
   this.selectDelivery = function(fromDate, toDate) {
     var deliveryId = $('#delivery_id').val();
 
@@ -67,10 +86,14 @@ namespace('kivi.CustomerVendor', function(ns) {
 
       kivi.CustomerVendor.setCustomVariablesFromAJAJ(data.contact_cvars, 'contact_cvars_');
 
-      if ( contactId )
+      if ( contactId ) {
         $('#action_delete_contact').show();
-      else
+        $('#contact_cp_title_select').val(contact['cp_title']);
+        $('#contact_cp_abteilung_select').val(contact['cp_abteilung']);
+      } else {
         $('#action_delete_contact').hide();
+        $('#contact_cp_title_select, #contact_cp_abteilung_select').val('');
+      }
       if (data.contact.disable_cp_main === 1)
         $("#contact_cp_main").prop("disabled", true);
       else
@@ -79,7 +102,6 @@ namespace('kivi.CustomerVendor', function(ns) {
         params.onFormSet();
     });
 
-    $('#contact_cp_title_select, #contact_cp_abteilung_select').val('');
   };
 
   var mapSearchStmts = [
@@ -446,7 +468,7 @@ namespace('kivi.CustomerVendor', function(ns) {
         $(elt).data('customer_vendor_picker', new kivi.CustomerVendor.Picker($(elt)));
     });
 
-    $('#cv_phone,#shipto_shiptophone,#contact_cp_phone1,#contact_cp_phone2,#contact_cp_mobile1,#contact_cp_mobile2').each(function(idx, elt) {
+    $('#cv_phone,#shipto_shiptophone,#additional_billing_address_phone,#contact_cp_phone1,#contact_cp_phone2,#contact_cp_mobile1,#contact_cp_mobile2').each(function(idx, elt) {
       kivi.CustomerVendor.init_dial_action($(elt));
     });
   }

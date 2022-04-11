@@ -9,6 +9,7 @@ use parent qw(SL::DB::Object);
 __PACKAGE__->meta->table('delivery_orders');
 
 __PACKAGE__->meta->columns(
+  billing_address_id      => { type => 'integer' },
   closed                  => { type => 'boolean', default => 'false' },
   cp_id                   => { type => 'integer' },
   currency_id             => { type => 'integer', not_null => 1 },
@@ -22,11 +23,11 @@ __PACKAGE__->meta->columns(
   globalproject_id        => { type => 'integer' },
   id                      => { type => 'integer', not_null => 1, sequence => 'id' },
   intnotes                => { type => 'text' },
-  is_sales                => { type => 'boolean' },
   itime                   => { type => 'timestamp', default => 'now()' },
   language_id             => { type => 'integer' },
   mtime                   => { type => 'timestamp' },
   notes                   => { type => 'text' },
+  order_type              => { type => 'text', not_null => 1 },
   ordnumber               => { type => 'text' },
   oreqnumber              => { type => 'text' },
   payment_id              => { type => 'integer' },
@@ -35,6 +36,7 @@ __PACKAGE__->meta->columns(
   shippingpoint           => { type => 'text' },
   shipto_id               => { type => 'integer' },
   shipvia                 => { type => 'text' },
+  tax_point               => { type => 'date' },
   taxincluded             => { type => 'boolean' },
   taxzone_id              => { type => 'integer', not_null => 1 },
   transaction_description => { type => 'text' },
@@ -47,6 +49,11 @@ __PACKAGE__->meta->primary_key_columns([ 'id' ]);
 __PACKAGE__->meta->allow_inline_column_values(1);
 
 __PACKAGE__->meta->foreign_keys(
+  billing_address => {
+    class       => 'SL::DB::AdditionalBillingAddress',
+    key_columns => { billing_address_id => 'id' },
+  },
+
   contact => {
     class       => 'SL::DB::Contact',
     key_columns => { cp_id => 'cp_id' },

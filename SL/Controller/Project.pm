@@ -90,7 +90,7 @@ sub action_destroy {
     flash_later('error', $::locale->text('The project is in use and cannot be deleted.'));
   }
 
-  $self->redirect_to(action => 'search');
+  $self->redirect_to(action => 'list');
 }
 
 sub action_ajax_autocomplete {
@@ -99,31 +99,35 @@ sub action_ajax_autocomplete {
   $::form->{filter}{'all:substr:multi::ilike'} =~ s{[\(\)]+}{}g;
 
   # if someone types something, and hits enter, assume he entered the full name.
-  # if something matches, treat that as sole match
-  # unfortunately get_models can't do more than one per package atm, so we d it
-  # the oldfashioned way.
+  # if something matches, treat that as the sole match
+  # since we need a second get models instance with different filters for that,
+  # we only modify the original filter temporarily in place
   if ($::form->{prefer_exact}) {
+    local $::form->{filter}{'all::ilike'} = delete local $::form->{filter}{'all:substr:multi::ilike'};
+    # active and valid filters are use as they are
+
+    my $exact_models = SL::Controller::Helper::GetModels->new(
+      controller   => $self,
+      sorted       => 0,
+      paginated    => { per_page => 2 },
+      with_objects => [ 'customer', 'project_status', 'project_type' ],
+    );
     my $exact_matches;
-    if (1 == scalar @{ $exact_matches = SL::DB::Manager::Project->get_all(
-      query => [
-        valid => 1,
-        or => [
-          description   => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
-          projectnumber => { ilike => $::form->{filter}{'all:substr:multi::ilike'} },
-        ]
-      ],
-      limit => 2,
-    ) }) {
-      $self->projects($exact_matches);
+    if (1 == scalar @{ $exact_matches = $exact_models->get }) {
+      $self->project($exact_matches);
     }
   }
 
   $::form->{sort_by} = 'customer_and_description';
 
+  my $description_style = ($::form->{description_style} =~ m{both|number|description|full})
+                        ? $::form->{description_style}
+                        : 'full';
+
   my @hashes = map {
    +{
-     value         => $_->full_description(style => 'full'),
-     label         => $_->full_description(style => 'full'),
+     value         => $_->full_description(style => $description_style),
+     label         => $_->full_description(style => $description_style),
      id            => $_->id,
      projectnumber => $_->projectnumber,
      description   => $_->description,
@@ -136,6 +140,14 @@ sub action_ajax_autocomplete {
 
 sub action_test_page {
   $_[0]->render('project/test_page');
+}
+
+sub action_project_picker_search {
+  $_[0]->render('project/project_picker_search', { layout => 0 });
+}
+
+sub action_project_picker_result {
+  $_[0]->render('project/_project_picker_result', { layout => 0 });
 }
 
 #
@@ -236,6 +248,7 @@ sub display_form {
 
   CVar->render_inputs(variables => $params{CUSTOM_VARIABLES}) if @{ $params{CUSTOM_VARIABLES} };
 
+  $::request->layout->use_javascript("$_.js") for qw(kivi.File ckeditor/ckeditor ckeditor/adapters/jquery);
   $self->setup_edit_action_bar(callback => $params{callback});
 
   $self->render('project/form', %params);

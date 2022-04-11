@@ -36,7 +36,10 @@ use List::MoreUtils qw(uniq);
 use List::Util qw(max sum);
 use POSIX qw(strftime);
 
+use SL::Controller::DeliveryOrder;
 use SL::DB::DeliveryOrder;
+use SL::DB::DeliveryOrder::TypeData qw(:types validate_type);
+use SL::Helper::UserPreferences::DisplayPreferences;
 use SL::DO;
 use SL::IR;
 use SL::IS;
@@ -55,8 +58,18 @@ use strict;
 
 # end of main
 
+sub check_do_access_for_edit {
+  validate_type($::form->{type});
+
+  my $right = SL::DB::DeliveryOrder::TypeData::get3($::form->{type}, "rights", "edit");
+  $main::auth->assert($right);
+}
+
 sub check_do_access {
-  $main::auth->assert($main::form->{type} . '_edit');
+  validate_type($::form->{type});
+
+  my $right = SL::DB::DeliveryOrder::TypeData::get3($::form->{type}, "rights", "view");
+  $main::auth->assert($right);
 }
 
 sub set_headings {
@@ -85,7 +98,7 @@ sub set_headings {
 sub add {
   $main::lxdebug->enter_sub();
 
-  check_do_access();
+  check_do_access_for_edit();
 
   if (($::form->{type} =~ /purchase/) && !$::instance_conf->get_allow_new_purchase_invoice) {
     $::form->show_generic_error($::locale->text("You do not have the permissions to access this function."));
@@ -98,7 +111,7 @@ sub add {
   $form->{show_details} = $::myconfig{show_form_details};
   $form->{callback} = build_std_url('action=add', 'type', 'vc') unless ($form->{callback});
 
-  order_links();
+  order_links(is_new => 1);
   prepare_order();
   display_form();
 
@@ -168,6 +181,7 @@ sub order_links {
 
   check_do_access();
 
+  my %params   = @_;
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
 
@@ -186,6 +200,7 @@ sub order_links {
   } else {
     IS->get_customer(\%myconfig, \%$form);
     $form->{discount} = $form->{customer_discount};
+    $form->{billing_address_id} = $form->{default_billing_address_id} if $params{is_new};
   }
 
   $form->restore_vars(qw(payment_id language_id taxzone_id intnotes cp_id delivery_term_id));
@@ -241,11 +256,21 @@ sub setup_do_action_bar {
   my @req_trans_desc = qw(kivi.SalesPurchase.check_transaction_description) x!!$::instance_conf->get_require_transaction_description_ps;
   my $is_customer    = $::form->{vc} eq 'customer';
 
+  my $undo_date  = DateTime->today->subtract(days => $::instance_conf->get_undo_transfer_interval);
+  my $insertdate = DateTime->from_kivitendo($::form->{insertdate});
+  my $undo_transfer  = 0;
+  if (ref $undo_date eq 'DateTime' && ref $insertdate eq 'DateTime') {
+    $undo_transfer = $insertdate > $undo_date;
+  }
+
+  my $may_edit_create = $::auth->assert(SL::DB::DeliveryOrder::TypeData::get3($::form->{type}, "rights", "edit"), 1);
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action =>
         [ t8('Update'),
           submit    => [ '#form', { action => "update" } ],
+          disabled  => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
           id        => 'update_button',
           accesskey => 'enter',
         ],
@@ -255,20 +280,24 @@ sub setup_do_action_bar {
           t8('Save'),
           submit   => [ '#form', { action => "save" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $::form->{delivered} ? t8('This record has already been delivered.') : undef,
+          disabled => !$may_edit_create    ? t8('You do not have the permissions to access this function.')
+                    : $::form->{delivered} ? t8('This record has already been delivered.')
+                    :                        undef,
         ],
         action => [
           t8('Save as new'),
           submit   => [ '#form', { action => "save_as_new" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => !$::form->{id},
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.')
+                    : !$::form->{id},
         ],
         action => [
           t8('Mark as closed'),
           submit   => [ '#form', { action => "mark_closed" } ],
           checks   => [ 'kivi.validate_form' ],
           confirm  => t8('This will remove the delivery order from showing as open even if contents are not delivered. Proceed?'),
-          disabled => !$::form->{id}    ? t8('This record has not been saved yet.')
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.')
+                    : !$::form->{id}    ? t8('This record has not been saved yet.')
                     : $::form->{closed} ? t8('This record has already been closed.')
                     :                     undef,
         ],
@@ -278,7 +307,8 @@ sub setup_do_action_bar {
         t8('Delete'),
         submit   => [ '#form', { action => "delete" } ],
         confirm  => t8('Do you really want to delete this object?'),
-        disabled => !$::form->{id}                                                                              ? t8('This record has not been saved yet.')
+        disabled => !$may_edit_create                                                                           ? t8('You do not have the permissions to access this function.')
+                  : !$::form->{id}                                                                              ? t8('This record has not been saved yet.')
                   : $::form->{delivered}                                                                        ? t8('This record has already been delivered.')
                   : ($::form->{vc} eq 'customer' && !$::instance_conf->get_sales_delivery_order_show_delete)    ? t8('Deleting this type of record has been disabled in the configuration.')
                   : ($::form->{vc} eq 'vendor'   && !$::instance_conf->get_purchase_delivery_order_show_delete) ? t8('Deleting this type of record has been disabled in the configuration.')
@@ -290,29 +320,46 @@ sub setup_do_action_bar {
           t8('Transfer out'),
           submit   => [ '#form', { action => "transfer_out" } ],
           checks   => [ 'kivi.validate_form', @transfer_qty ],
-          disabled => $::form->{delivered} ? t8('This record has already been delivered.') : undef,
+          disabled => !$may_edit_create    ? t8('You do not have the permissions to access this function.')
+                    : $::form->{delivered} ? t8('This record has already been delivered.')
+                    :                        undef,
           only_if  => $is_customer,
         ],
         action => [
           t8('Transfer out via default'),
           submit   => [ '#form', { action => "transfer_out_default" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $::form->{delivered} ? t8('This record has already been delivered.') : undef,
+          disabled => !$may_edit_create    ? t8('You do not have the permissions to access this function.')
+                    : $::form->{delivered} ? t8('This record has already been delivered.')
+                    :                        undef,
           only_if  => $is_customer && $::instance_conf->get_transfer_default,
         ],
         action => [
           t8('Transfer in'),
           submit   => [ '#form', { action => "transfer_in" } ],
           checks   => [ 'kivi.validate_form', @transfer_qty ],
-          disabled => $::form->{delivered} ? t8('This record has already been delivered.') : undef,
+          disabled => !$may_edit_create    ? t8('You do not have the permissions to access this function.')
+                    : $::form->{delivered} ? t8('This record has already been delivered.')
+                    :                        undef,
           only_if  => !$is_customer,
         ],
         action => [
           t8('Transfer in via default'),
           submit   => [ '#form', { action => "transfer_in_default" } ],
           checks   => [ 'kivi.validate_form' ],
-          disabled => $::form->{delivered} ? t8('This record has already been delivered.') : undef,
+          disabled => !$may_edit_create    ? t8('You do not have the permissions to access this function.')
+                    : $::form->{delivered} ? t8('This record has already been delivered.')
+                    :                        undef,
           only_if  => !$is_customer && $::instance_conf->get_transfer_default,
+        ],
+        action => [
+          t8('Undo Transfer'),
+          submit   => [ '#form', { action => "delete_transfers" } ],
+          checks   => [ 'kivi.validate_form' ],
+          only_if  => $::form->{delivered},
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.')
+                    : !$undo_transfer   ? t8('Transfer date exceeds the maximum allowed interval.')
+                    :                     undef,
         ],
       ], # end of combobox "Transfer out"
 
@@ -323,19 +370,27 @@ sub setup_do_action_bar {
         t8('Invoice'),
         submit => [ '#form', { action => "invoice" } ],
         disabled => !$::form->{id} ? t8('This record has not been saved yet.') : undef,
+        confirm  => $::form->{delivered}                                                                         ? undef
+                  : ($::form->{vc} eq 'customer' && $::instance_conf->get_sales_delivery_order_check_stocked)    ? t8('This record has not been stocked out. Proceed?')
+                  : ($::form->{vc} eq 'vendor'   && $::instance_conf->get_purchase_delivery_order_check_stocked) ? t8('This record has not been stocked in. Proceed?')
+                  :                                                                                                undef,
       ],
 
       combobox => [
         action => [ t8('Export') ],
         action => [
           t8('Print'),
-          call   => [ 'kivi.SalesPurchase.show_print_dialog' ],
-          checks => [ 'kivi.validate_form' ],
+          call     => [ 'kivi.SalesPurchase.show_print_dialog' ],
+          checks   => [ 'kivi.validate_form' ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.') : undef,
         ],
         action => [
           t8('E Mail'),
           call   => [ 'kivi.SalesPurchase.show_email_dialog' ],
           checks => [ 'kivi.validate_form' ],
+          disabled => !$may_edit_create ? t8('You do not have the permissions to access this function.')
+                    : !$::form->{id} ?    t8('This record has not been saved yet.')
+                    :                     undef,
         ],
       ], # end of combobox "Export"
 
@@ -416,6 +471,7 @@ sub form_header {
                    "business_types" => "ALL_BUSINESS_TYPES",
     );
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
+  $form->{ALL_LANGUAGES}   = SL::DB::Manager::Language->get_all_sorted;
 
   # Projects
   my @old_project_ids = uniq grep { $_ } map { $_ * 1 } ($form->{"globalproject_id"}, map { $form->{"project_id_$_"} } 1..$form->{"rowcount"});
@@ -454,21 +510,17 @@ sub form_header {
   if ($form->{resubmit} && ($form->{format} eq "html")) {
     $dispatch_to_popup  = "window.open('about:blank','Beleg'); document.do.target = 'Beleg';";
     $dispatch_to_popup .= "document.do.submit();";
-  } elsif ($form->{resubmit}) {
+  } elsif ($form->{resubmit} && $form->{action_print}) {
     # emulate click for resubmitting actions
-    $dispatch_to_popup  = "document.do.${_}.click(); " for grep { /^action_/ } keys %$form;
+    $dispatch_to_popup  = "kivi.SalesPurchase.show_print_dialog(); kivi.SalesPurchase.print_record();";
   }
   $::request->{layout}->add_javascripts_inline("\$(function(){$dispatch_to_popup});");
 
 
   $form->{follow_up_trans_info} = $form->{donumber} .'('. $form->{VC_OBJ}->name .')' if $form->{VC_OBJ};
+  $form->{longdescription_dialog_size_percentage} = SL::Helper::UserPreferences::DisplayPreferences->new()->get_longdescription_dialog_size_percentage();
 
   $::request->{layout}->use_javascript(map { "${_}.js" } qw(kivi.File kivi.MassDeliveryOrderPrint kivi.SalesPurchase kivi.Part kivi.CustomerVendor kivi.Validator ckeditor/ckeditor ckeditor/adapters/jquery kivi.io));
-
-  my @custom_hidden;
-  push @custom_hidden, map { "shiptocvar_" . $_->name } @{ SL::DB::Manager::CustomVariableConfig->get_all(where => [ module => 'ShipTo' ]) };
-
-  $::form->{HIDDENS} = [ map { +{ name => $_, value => $::form->{$_} } } (@custom_hidden) ];
 
   setup_do_action_bar();
 
@@ -500,8 +552,15 @@ sub form_footer {
   $form->{PRINT_OPTIONS}      = setup_sales_purchase_print_options();
   $form->{ALL_DELIVERY_TERMS} = SL::DB::Manager::DeliveryTerm->get_all_sorted();
 
+  my $shipto_cvars       = SL::DB::Shipto->new->cvars_by_config;
+  foreach my $var (@{ $shipto_cvars }) {
+    my $name = "shiptocvar_" . $var->config->name;
+    $var->value($form->{$name}) if exists $form->{$name};
+  }
+
   print $form->parse_html_template('do/form_footer',
-    {transfer_default         => ($::instance_conf->get_transfer_default)});
+    {transfer_default => ($::instance_conf->get_transfer_default),
+     shipto_cvars     => $shipto_cvars});
 
   $main::lxdebug->leave_sub();
 }
@@ -527,8 +586,12 @@ sub update_delivery_order {
   if (($form->{"previous_${vc}_id"} || $form->{"${vc}_id"}) != $form->{"${vc}_id"}) {
     $::form->{salesman_id} = SL::DB::Manager::Employee->current->id if exists $::form->{salesman_id};
 
-    IS->get_customer(\%myconfig, $form) if $vc eq 'customer';
-    IR->get_vendor(\%myconfig, $form)   if $vc eq 'vendor';
+    if ($vc eq 'customer') {
+      IS->get_customer(\%myconfig, $form);
+      $::form->{billing_address_id} = $::form->{default_billing_address_id};
+    } else {
+      IR->get_vendor(\%myconfig, $form);
+    }
   }
 
   $form->{discount} =  $form->{"$form->{vc}_discount"} if defined $form->{"$form->{vc}_discount"};
@@ -860,7 +923,9 @@ sub orders {
       'align'    => 'center',
     };
 
-    $row->{donumber}->{link}  = $edit_url       . "&id=" . E($dord->{id})      . "&callback=${callback}";
+    $row->{donumber}->{link}  = SL::DB::DeliveryOrder::TypeData::get3($dord->{order_type}, "show_menu", "new_controller")
+                              ? SL::Controller::DeliveryOrder->url_for(action => "edit", id => $dord->{id}, type => $dord->{order_type})
+                              : $edit_url  . "&id=" . E($dord->{id})      . "&callback=${callback}";
     $row->{ordnumber}->{link} = $edit_order_url . "&id=" . E($dord->{oe_id})   . "&callback=${callback}" if $dord->{oe_id};
     $report->add_data($row);
 
@@ -879,7 +944,7 @@ sub save {
 
   my (%params) = @_;
 
-  check_do_access();
+  check_do_access_for_edit();
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -903,20 +968,43 @@ sub save {
   remove_emptied_rows();
   validate_items();
 
+  # check for serial number if part needs one
+  for my $i (1 .. $form->{rowcount} - 1) {
+    next unless $form->{"has_sernumber_$i"};
+    $form->isblank("serialnumber_$i",
+                   $locale->text('Serial Number missing in Row') . " $i");
+  }
   # if the name changed get new values
   my $vc = $form->{vc};
   if (($form->{"previous_${vc}_id"} || $form->{"${vc}_id"}) != $form->{"${vc}_id"}) {
     $::form->{salesman_id} = SL::DB::Manager::Employee->current->id if exists $::form->{salesman_id};
 
-    IS->get_customer(\%myconfig, $form) if $vc eq 'customer';
-    IR->get_vendor(\%myconfig, $form)   if $vc eq 'vendor';
+    if ($vc eq 'customer') {
+      IS->get_customer(\%myconfig, $form);
+      $::form->{billing_address_id} = $::form->{default_billing_address_id};
+    } else {
+      IR->get_vendor(\%myconfig, $form);
+    }
 
     update();
     $::dispatcher->end_request;
   }
 
   $form->{id} = 0 if $form->{saveasnew};
-
+  # we rely on converted_from_orderitems, if the workflow is used
+  # be sure that at least one position is linked to the original orderitem
+  if ($form->{convert_from_oe_ids}) {
+    my $has_linked_pos;
+    for my $i (1 .. $form->{rowcount}) {
+      if ($form->{"converted_from_orderitems_id_$i"}) {
+        $has_linked_pos = 1;
+        last;
+      }
+    }
+    if (!$has_linked_pos) {
+      $form->error($locale->text('Need at least one original position for the workflow Order to Delivery Order!'));
+    }
+  }
   DO->save();
   # saving the history
   if(!exists $form->{addition}) {
@@ -938,7 +1026,7 @@ sub save {
 sub delete {
   $main::lxdebug->enter_sub();
 
-  check_do_access();
+  check_do_access_for_edit();
 
   my $form     = $main::form;
   my %myconfig = %main::myconfig;
@@ -961,6 +1049,37 @@ sub delete {
 
   $main::lxdebug->leave_sub();
 }
+sub delete_transfers {
+  $main::lxdebug->enter_sub();
+
+  check_do_access_for_edit();
+
+  my $form     = $main::form;
+  my %myconfig = %main::myconfig;
+  my $locale   = $main::locale;
+  my $ret;
+
+  die "Invalid form type" unless $form->{type} =~ m/^(sales|purchase)_delivery_order$/;
+
+  if ($ret = DO->delete_transfers()) {
+    # saving the history
+    if(!exists $form->{addition}) {
+      $form->{snumbers} = qq|donumber_| . $form->{donumber};
+      $form->{addition} = "UNDO TRANSFER";
+      $form->save_history;
+    }
+    # /saving the history
+
+    flash_later('info', $locale->text("Transfer undone."));
+
+    $form->{callback} = 'do.pl?action=edit&type=' . $form->{type} . '&id=' . $form->escape($form->{id});
+    $form->redirect;
+  }
+
+  $form->error($locale->text('Cannot undo delivery order transfer!') . $ret);
+
+  $main::lxdebug->leave_sub();
+}
 
 sub invoice {
   $main::lxdebug->enter_sub();
@@ -973,6 +1092,8 @@ sub invoice {
   $form->mtime_ischanged('delivery_orders');
 
   $main::auth->assert($form->{type} eq 'purchase_delivery_order' ? 'vendor_invoice_edit' : 'invoice_edit');
+
+  $form->get_employee();
 
   $form->{convert_from_do_ids} = $form->{id};
   # if we have a reqdate (Liefertermin), this is definetely the preferred
@@ -1034,7 +1155,8 @@ sub invoice {
     if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $form->{ordnumber}, $vc_id => $form->{"$vc_id"})) {
       $order->load;
       $form->{orddate} = $order->transdate_as_date;
-      $form->{$_}      = $order->$_ for qw(payment_id salesman_id taxzone_id quonumber);
+      $form->{$_}      = $order->$_ for qw(payment_id salesman_id taxzone_id quonumber taxincluded);
+      $form->{taxincluded_changed_by_user} = 1;
     }
   }
 
@@ -1184,7 +1306,7 @@ sub invoice_multi {
 sub save_as_new {
   $main::lxdebug->enter_sub();
 
-  check_do_access();
+  check_do_access_for_edit();
 
   my $form     = $main::form;
 
@@ -1228,11 +1350,9 @@ sub calculate_stock_in_out {
   my $sum      = AM->sum_with_unit(map { $_->{qty}, $_->{unit} } @{ $sinfo });
   my $matches  = $do_qty == $sum;
 
-  my $content  = $form->format_amount_units('amount'      => $sum * 1,
-                                            'part_unit'   => $form->{"partunit_$i"},
-                                            'amount_unit' => $all_units->{$form->{"partunit_$i"}}->{base_unit},
-                                            'conv_units'  => 'convertible_not_smaller',
-                                            'max_places'  => 2);
+  my $amount_unit = $all_units->{$form->{"partunit_$i"}}->{base_unit};
+  my $content     = $form->format_amount(\%::myconfig, AM->convert_unit($amount_unit, $form->{"unit_$i"}) * $sum * 1) . ' ' . $form->{"unit_$i"};
+
   $content     = qq|<span id="stock_in_out_qty_display_${i}">${content}</span><input type=hidden id='stock_in_out_qty_matches_$i' value='$matches'> <input type="button" onclick="open_stock_in_out_window('${in_out}', $i);" value="?">|;
 
   $main::lxdebug->leave_sub();
@@ -1366,11 +1486,8 @@ sub _stock_in_out_set_qty_display {
   my $form             = $::form;
   my $all_units        = AM->retrieve_all_units();
   my $sum              = AM->sum_with_unit(map { $_->{qty}, $_->{unit} } @{ $stock_info });
-  $form->{qty_display} = $form->format_amount_units(amount      => $sum * 1,
-                                                    part_unit   => $form->{partunit},
-                                                    amount_unit => $all_units->{ $form->{partunit} }->{base_unit},
-                                                    conv_units  => 'convertible_not_smaller',
-                                                    max_places  => 2);
+  my $amount_unit      = $all_units->{$form->{"partunit"}}->{base_unit};
+  $form->{qty_display} = $form->format_amount(\%::myconfig, AM->convert_unit($amount_unit, $form->{"do_unit"}) * $sum * 1) . ' ' . $form->{"do_unit"};
 }
 
 sub set_stock_in {
@@ -1424,10 +1541,7 @@ sub stock_out_form {
 
   if (!$form->{delivered}) {
     foreach my $row (@contents) {
-      $row->{available_qty} = $form->format_amount_units('amount'      => $row->{qty} * 1,
-                                                         'part_unit'   => $part_info->{unit},
-                                                         'conv_units'  => 'convertible_not_smaller',
-                                                         'max_places'  => 2);
+      $row->{available_qty} = $form->format_amount(\%::myconfig, $row->{qty} * 1) . ' ' . $part_info->{unit};
 
       foreach my $sinfo (@{ $stock_info }) {
         next if (($row->{bin_id}       != $sinfo->{bin_id}) ||
@@ -1570,6 +1684,7 @@ sub transfer_in {
 
   SL::DB::DeliveryOrder->new(id => $form->{id})->load->update_attributes(delivered => 1);
 
+  flash_later('info', $locale->text("Transfer successful"));
   $form->{callback} = 'do.pl?action=edit&type=purchase_delivery_order&id=' . $form->escape($form->{id});
   $form->redirect;
 
@@ -1657,18 +1772,14 @@ sub transfer_out {
                                                      $binfo->{bin_description},
                                                      $request->{chargenumber} ? $locale->text('chargenumber #1', $request->{chargenumber}) : $locale->text('no chargenumber'),
                                                      $request->{bestbefore} ? $locale->text('bestbefore #1', $request->{bestbefore}) : $locale->text('no bestbefore'),
-                                                     $form->format_amount_units('amount'      => $request->{sum_base_qty},
-                                                                                'part_unit'   => $pinfo->{unit},
-                                                                                'conv_units'  => 'convertible_not_smaller'));
+                                                     $form->format_amount(\%::myconfig, $request->{sum_base_qty}) . ' ' . $pinfo->{unit});
         } else {
             push @{ $form->{ERRORS} }, $locale->text("There is not enough available of '#1' at warehouse '#2', bin '#3', #4, for the transfer of #5.",
                                                      $pinfo->{description},
                                                      $binfo->{warehouse_description},
                                                      $binfo->{bin_description},
                                                      $request->{chargenumber} ? $locale->text('chargenumber #1', $request->{chargenumber}) : $locale->text('no chargenumber'),
-                                                     $form->format_amount_units('amount'      => $request->{sum_base_qty},
-                                                                                'part_unit'   => $pinfo->{unit},
-                                                                                'conv_units'  => 'convertible_not_smaller'));
+                                                     $form->format_amount(\%::myconfig, $request->{sum_base_qty}) . ' ' . $pinfo->{unit});
         }
       }
     }
@@ -1688,6 +1799,7 @@ sub transfer_out {
 
   SL::DB::DeliveryOrder->new(id => $form->{id})->load->update_attributes(delivered => 1);
 
+  flash_later('info', $locale->text("Transfer successful"));
   $form->{callback} = 'do.pl?action=edit&type=sales_delivery_order&id=' . $form->escape($form->{id});
   $form->redirect;
 
@@ -1711,7 +1823,7 @@ sub mark_closed {
 sub display_form {
   $::lxdebug->enter_sub;
 
-  $::auth->assert('purchase_delivery_order_edit | sales_delivery_order_edit');
+  check_do_access();
 
   relink_accounts();
   retrieve_partunits();

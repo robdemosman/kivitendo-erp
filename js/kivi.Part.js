@@ -7,7 +7,7 @@ namespace('kivi.Part', function(ns) {
       url:    'controller.pl?action=Part/history&part.id=' + id,
       dialog: { title: kivi.t8('History') },
     });
-  }
+  };
 
   ns.save = function() {
     var data = $('#ic').serializeArray();
@@ -34,7 +34,7 @@ namespace('kivi.Part', function(ns) {
   };
 
   ns.set_tab_active_by_index = function (index) {
-    $("#ic_tabs").tabs({active: index})
+    $("#ic_tabs").tabs({active: index});
   };
 
   ns.set_tab_active_by_name= function (name) {
@@ -66,26 +66,32 @@ namespace('kivi.Part', function(ns) {
 
     $('#' + order_by + '_header_id a').append('<img border=0 data-sort-dir=' + dir + ' src=' + src + ' alt="' + kivi.t8('sort items') + '">');
 
-    data.push({ name: 'action',    value: 'Part/reorder_items' },
-              { name: 'order_by',  value: order_by             },
-              { name: 'part_type', value: part_type            },
-              { name: 'sort_dir',  value: dir                  });
+    data.push(
+      { name: 'action',    value: 'Part/reorder_items' },
+      { name: 'order_by',  value: order_by             },
+      { name: 'part_type', value: part_type            },
+      { name: 'sort_dir',  value: dir                  }
+    );
 
     $.post("controller.pl", data, kivi.eval_json_result);
   };
 
   ns.assortment_recalc = function() {
     var data = $('#assortment :input').serializeArray();
-    data.push({ name: 'action', value: 'Part/update_item_totals' },
-              { name: 'part_type', value: 'assortment'                   });
+    data.push(
+      { name: 'action', value: 'Part/update_item_totals' },
+      { name: 'part_type', value: 'assortment'           }
+    );
 
     $.post("controller.pl", data, kivi.eval_json_result);
   };
 
   ns.assembly_recalc = function() {
     var data = $('#assembly :input').serializeArray();
-    data.push( { name: 'action',    value: 'Part/update_item_totals' },
-               { name: 'part_type', value: 'assembly'                        });
+    data.push(
+      { name: 'action',    value: 'Part/update_item_totals' },
+      { name: 'part_type', value: 'assembly'                }
+    );
 
     $.post("controller.pl", data, kivi.eval_json_result);
   };
@@ -159,9 +165,11 @@ namespace('kivi.Part', function(ns) {
     $('#row_table_id thead a img').remove();
 
     var data = $('#assortment :input').serializeArray();
-    data.push({ name: 'action', value: 'Part/add_assortment_item' },
-              { name: 'part.id', value: $('#part_id').val()       },
-              { name: 'part.part_type', value: 'assortment'       });
+    data.push(
+      { name: 'action', value: 'Part/add_assortment_item' },
+      { name: 'part.id', value: $('#part_id').val()       },
+      { name: 'part.part_type', value: 'assortment'       }
+    );
     $('#assortment_picker').data('part_picker').clear();
 
     $.post("controller.pl", data, kivi.eval_json_result);
@@ -171,9 +179,11 @@ namespace('kivi.Part', function(ns) {
     if ($('#assembly_picker').val() === '') return;
 
     var data = $('#assembly :input').serializeArray();
-    data.push({ name: 'action', value: 'Part/add_assembly_item' },
-              { name: 'part.id', value: $("#part_id").val()     },
-              { name: 'part.part_type', value: 'assembly'       });
+    data.push(
+      { name: 'action', value: 'Part/add_assembly_item' },
+      { name: 'part.id', value: $("#part_id").val()     },
+      { name: 'part.part_type', value: 'assembly'       }
+    );
     $('#assembly_picker').data('part_picker').clear();
 
     $.post("controller.pl", data, kivi.eval_json_result);
@@ -183,20 +193,20 @@ namespace('kivi.Part', function(ns) {
     data.push({ name: 'part.id',        value: $('#part_id').val() });
     data.push({ name: 'part.part_type', value: $('#part_part_type').val() });
     $.post("controller.pl?action=Part/add_multi_assembly_items", data, kivi.eval_json_result);
-  }
+  };
 
   ns.set_multi_assortment_items = function(data) {
     data.push({ name: 'part.id', value: $('#part_id').val() });
     data.push({ name: 'part.part_type', value: $('#part_part_type').val() });
     $.post("controller.pl?action=Part/add_multi_assortment_items", data, kivi.eval_json_result);
-  }
+  };
 
   ns.close_picker_dialogs = function() {
     $('.part_autocomplete').each(function(_, e) {
       var picker = $(e).data('part_picker');
       if (picker && picker.dialog) picker.close_dialog();
     });
-  }
+  };
 
   ns.redisplay_items = function(data) {
     var old_rows;
@@ -285,8 +295,8 @@ namespace('kivi.Part', function(ns) {
 
 
   ns.reload_bin_selection = function() {
-    $.post("controller.pl", { action: 'Part/warehouse_changed', warehouse_id: function(){ return $('#part_warehouse_id').val() } },   kivi.eval_json_result);
-  }
+    $.post("controller.pl", { action: 'Part/warehouse_changed', warehouse_id: function(){ return $('#part_warehouse_id').val(); } },   kivi.eval_json_result);
+  };
 
   var KEY = {
     TAB:       9,
@@ -312,7 +322,8 @@ namespace('kivi.Part', function(ns) {
         commit_none: function(){ },
         commit_one:  function(){ $('#update_button').click(); },
         commit_many: function(){ self.open_dialog(); }
-      }
+      },
+      multiple_limit: 100
     }, $real.data('part-picker-data'), options);
     this.$real              = $real;
     this.real_id            = $real.attr('id');
@@ -323,6 +334,7 @@ namespace('kivi.Part', function(ns) {
     this.last_dummy         = this.$dummy.val();
     this.timer              = undefined;
     this.dialog             = undefined;
+    this.multiple_default   = this.o.multiple;
 
     this.init();
   };
@@ -347,7 +359,7 @@ namespace('kivi.Part', function(ns) {
         data['filter.obsolete'] = 0;
 
       if (this.o.classification_id)
-        data['filter.classification_id'] = this.o.classification_id.split(',');
+        data['filter.classification_id:any'] = this.o.classification_id.replaceAll(',', ' ');
 
       if (this.o.unit)
         data['filter.unit'] = this.o.unit.split(',');
@@ -400,11 +412,11 @@ namespace('kivi.Part', function(ns) {
     make_defined_state: function() {
       if (this.state == this.STATES.PICKED) {
         this.annotate_state();
-        return true
-      } else if (this.state == this.STATES.UNDEFINED && this.$dummy.val() === '')
-        this.set_item({})
-      else {
-        this.set_item({ id: this.last_real, name: this.last_dummy })
+        return true;
+      } else if (this.state == this.STATES.UNDEFINED && this.$dummy.val() === '') {
+        this.set_item({});
+      } else {
+        this.set_item({ id: this.last_real, name: this.last_dummy });
       }
       this.annotate_state();
     },
@@ -487,6 +499,7 @@ namespace('kivi.Part', function(ns) {
     },
     open_dialog: function() {
       if (this.o.multiple) {
+        this.o.multiple = this.multiple_default;
         this.dialog = new ns.PickerMultiPopup(this);
       } else {
         this.dialog = new ns.PickerPopup(this);
@@ -504,7 +517,7 @@ namespace('kivi.Part', function(ns) {
             url:      'controller.pl?action=Part/ajax_autocomplete',
             dataType: "json",
             data:     self.ajax_data(req.term),
-            success:  function (data){ rsp(data) }
+            success:  function (data){ rsp(data); }
           }));
         },
         select: function(event, ui) {
@@ -513,7 +526,7 @@ namespace('kivi.Part', function(ns) {
             self.run_action(self.o.action.commit_one);
           }
         },
-        search: function(event, ui) {
+        search: function(event) {
           if ((event.which == KEY.SHIFT) || (event.which == KEY.CTRL) || (event.which == KEY.ALT))
             event.preventDefault();
         },
@@ -524,7 +537,7 @@ namespace('kivi.Part', function(ns) {
           self.autocomplete_open = false;
         }
       });
-      this.$dummy.keydown(function(event){ self.handle_keydown(event) });
+      this.$dummy.keydown(function(event){ self.handle_keydown(event); });
       this.$dummy.on('paste', function(){
         setTimeout(function() {
           self.handle_changed_text();
@@ -532,16 +545,16 @@ namespace('kivi.Part', function(ns) {
       });
       this.$dummy.blur(function(){
         window.clearTimeout(self.timer);
-        self.timer = window.setTimeout(function() { self.annotate_state() }, 100);
+        self.timer = window.setTimeout(function() { self.annotate_state(); }, 100);
       });
 
       var popup_button = $('<span>').addClass('ppp_popup_button');
       this.$dummy.after(popup_button);
-      popup_button.click(function() { self.open_dialog() });
+      popup_button.click(function() { self.open_dialog(); });
     },
     run_action: function(code, args) {
       if (typeof code === 'function')
-        code.apply(this, args)
+        code.apply(this, args);
       else
         kivi.run(code, args);
     },
@@ -565,7 +578,9 @@ namespace('kivi.Part', function(ns) {
       var self = this;
       kivi.popup_dialog({
         url: 'controller.pl?action=Part/part_picker_search',
-        data: self.pp.ajax_data(this.pp.$dummy.val()),
+        data: $.extend({
+          real_id: self.pp.real_id,
+        }, self.pp.ajax_data(this.pp.$dummy.val())),
         id: 'part_selection',
         dialog: {
           title: kivi.t8('Part picker'),
@@ -579,8 +594,8 @@ namespace('kivi.Part', function(ns) {
     },
     init_search: function() {
       var self = this;
-      $('#part_picker_filter').keypress(function(e) { self.result_timer(e) }).focus();
-      $('#no_paginate').change(function() { self.update_results() });
+      $('#part_picker_filter').keypress(function(e) { self.result_timer(e); }).focus();
+      $('#no_paginate').change(function() { self.update_results(); });
       this.update_results();
     },
     update_results: function() {
@@ -591,7 +606,7 @@ namespace('kivi.Part', function(ns) {
           no_paginate: $('#no_paginate').prop('checked') ? 1 : 0,
         }, self.pp.ajax_data(function(){
           var val = $('#part_picker_filter').val();
-          return val === undefined ? '' : val
+          return val === undefined ? '' : val;
         })),
         success: function(data){
           $('#part_picker_result').html(data);
@@ -618,10 +633,10 @@ namespace('kivi.Part', function(ns) {
         });
       });
       $('#part_selection').keydown(function(e){
-         if (e.which == KEY.ESCAPE) {
-           self.close_dialog();
-           self.pp.$dummy.focus();
-         }
+        if (e.which == KEY.ESCAPE) {
+          self.close_dialog();
+          self.pp.$dummy.focus();
+        }
       });
     },
     result_timer: function(event) {
@@ -640,7 +655,7 @@ namespace('kivi.Part', function(ns) {
       if (event.which == KEY.ENTER) {
         self.update_results();
       } else {
-        this.timer = window.setTimeout(function() { self.update_results() }, 100);
+        this.timer = window.setTimeout(function() { self.update_results(); }, 100);
       }
     },
     close_dialog: function() {
@@ -663,6 +678,7 @@ namespace('kivi.Part', function(ns) {
         url: 'controller.pl?action=Part/show_multi_items_dialog',
         data: $.extend({
           real_id: self.pp.real_id,
+          show_pos_input: self.pp.o.multiple_pos_input,
         }, self.pp.ajax_data(this.pp.$dummy.val())),
         id: 'jq_multi_items_dialog',
         dialog: {
@@ -687,17 +703,18 @@ namespace('kivi.Part', function(ns) {
       });
 
       $('#multi_items_filter_all_substr_multi_ilike').focus();
-      $('#multi_items_filter_button').click(function(){ self.update_results() });
-      $('#multi_items_filter_reset').click(function(){ $("#multi_items_form").resetForm() });
-      $('#continue_button').click(function(){ self.add_multi_items() });
+      $('#multi_items_filter_button').click(function(){ self.update_results(); });
+      $('#multi_items_filter_reset').click(function(){ $("#multi_items_form").resetForm(); });
+      $('#continue_button').click(function(){ self.add_multi_items(); });
     },
     update_results: function() {
       var self = this;
       var data = $('#multi_items_form').serializeArray();
-      data.push({ name: 'type', value: self.pp.type });
+      data.push({ name: 'type',  value: self.pp.type });
+      data.push({ name: 'limit', value: self.pp.o.multiple_limit });
       var ppdata = self.pp.ajax_data(function(){
         var val = $('#multi_items_filter').val();
-        return val === undefined ? '' : val
+        return val === undefined ? '' : val;
       });
       $.each(Object.keys(ppdata), function() {data.push({ name: 'multi_items.' + this, value: ppdata[this]});});
       $.ajax({
@@ -722,20 +739,20 @@ namespace('kivi.Part', function(ns) {
       $('#multi_items_all_qty').change(function(event){
         $('.multi_items_qty').val($(event.target).val());
       });
-      $('.multi_items_qty').click(function(){ self.set_qty_to_one(this) });
+      $('.multi_items_qty').click(function(){ self.set_qty_to_one(this); });
     },
-    result_timer: function(event) {
+    result_timer: function() {
     },
     close_dialog: function() {
       $('#jq_multi_items_dialog').dialog('close');
     },
     disable_continue: function() {
-      $('#multi_items_result input').off("keydown");
+      $('#multi_items_result input, #multi_items_position').off("keydown");
       $('#continue_button').prop('disabled', true);
     },
     enable_continue: function() {
       var self = this;
-      $('#multi_items_result input').keydown(function(event) {
+      $('#multi_items_result input, #multi_items_position').keydown(function(event) {
         if(event.keyCode == KEY.ENTER) {
           event.preventDefault();
           self.add_multi_items();
@@ -775,15 +792,15 @@ namespace('kivi.Part', function(ns) {
     kivi.run_once_for('#makemodel_rows', 'makemodel_row_sort_renumber', function(elt) {
       $(elt).on('sortstop', kivi.Part.makemodel_renumber_positions);
     });
-  }
+  };
 
   ns.init = function() {
     ns.reinit_widgets();
-  }
+  };
 
   $(function(){
     $('#ic').on('focusout', '.reformat_number', function(event) {
-       ns.reformat_number(event);
+      ns.reformat_number(event);
     });
 
     $('#part_warehouse_id').change(kivi.Part.reload_bin_selection);

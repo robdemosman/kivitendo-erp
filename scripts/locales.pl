@@ -1,9 +1,6 @@
 #!/usr/bin/perl
 
-# -n do not include custom_ scripts
-# -v verbose mode, shows progress stuff
-
-# this version of locles processes not only all required .pl files
+# this version of locales processes not only all required .pl files
 # but also all parse_html_templated files.
 
 use utf8;
@@ -34,7 +31,6 @@ use SL::YAML;
 $OUTPUT_AUTOFLUSH = 1;
 
 my $opt_v  = 0;
-my $opt_n  = 0;
 my $opt_c  = 0;
 my $opt_f  = 0;
 my $debug  = 0;
@@ -47,7 +43,7 @@ my $locales_dir  = ".";
 my $bindir       = "$basedir/bin/mozilla";
 my @progdirs     = ( "$basedir/SL" );
 my @menufiles    = glob("${basedir}/menus/*/*");
-my @javascript_dirs = ($basedir .'/js', $basedir .'/templates/webpages');
+my @javascript_dirs = ($basedir .'/js', $basedir .'/templates/webpages', $basedir .'/templates/mobile_webpages');
 my $javascript_output_dir = $basedir .'/js';
 my $submitsearch = qr/type\s*=\s*[\"\']?submit/i;
 our $self        = {};
@@ -100,7 +96,6 @@ my @customfiles  = grep /_custom/, @bindir_files;
 
 push @progfiles, map { m:^(.+)/([^/]+)$:; [ $2, $1 ] } grep { /\.pm$/ } map { find_files($_) } @progdirs;
 
-# put customized files into @customfiles
 my %dir_h;
 
 my @dbplfiles;
@@ -149,19 +144,26 @@ for my $file_name (grep { /\.(?:js|html)$/i } map({find_files($_)} @javascript_d
 # merge entries to translate with entries from files 'missing' and 'lost'
 merge_texts();
 
-# generate all
+# Generate "all" without translations in more_texts.
+# But keep the ones which are in both old_texts (texts) and more_texts,
+# because this are ones which are overwritten in more_texts for custom usage.
+my %to_keep;
+$to_keep{$_} = 1 for grep { !!$self->{more_texts}{$_} } keys %old_texts;
+my @new_all  = grep { $to_keep{$_} || !$self->{more_texts}{$_} } sort keys %alllocales;
+
 generate_file(
   file      => "$locales_dir/all",
   header    => $ALL_HEADER,
   data_name => '$self->{texts}',
-  data_sub  => sub { _print_line($_, $self->{texts}{$_}, @_) for sort keys %alllocales },
+  data_sub  => sub { _print_line($_, $self->{texts}{$_}, @_) for @new_all },
 );
 
 open(my $js_file, '>:encoding(utf8)', $javascript_output_dir .'/locale/'. $locale .'.js') || die;
 print $js_file 'namespace("kivi").setupLocale({';
 my $first_entry = 1;
 for my $key (sort(keys(%jslocale))) {
-  print $js_file ((!$first_entry ? ',' : '') ."\n". _double_quote($key) .':'. _double_quote($self->{texts}{$key}));
+  my $trans = $self->{more_texts}{$key} // $self->{texts}{$key};
+  print $js_file ((!$first_entry ? ',' : '') ."\n". _double_quote($key) .':'. _double_quote($trans));
   $first_entry = 0;
 }
 print $js_file ("\n");
@@ -266,7 +268,6 @@ sub parse_args {
   my ($opt_no_c, $ignore_for_compatiblity);
 
   GetOptions(
-    'no-custom-files' => \$opt_n,
     'check-files'     => \$ignore_for_compatiblity,
     'no-check-files'  => \$opt_no_c,
     'verbose'         => \$opt_v,
@@ -433,23 +434,25 @@ sub scanfile {
 
       # is this a template call?
       if (/(?:parse_html_template2?|render)\s*\(\s*[\"\']([\w\/]+)\s*[\"\']/) {
-        my $new_file_base = "$basedir/templates/webpages/$1.";
+        my $new_file_name = $1;
         if (/parse_html_template2/) {
-          print "E: " . strip_base($file) . " is still using 'parse_html_template2' for " . strip_base("${new_file_base}html") . ".\n";
+          print "E: " . strip_base($file) . " is still using 'parse_html_template2' for $new_file_name.html.\n";
         }
 
         my $found_one = 0;
-        foreach my $ext (qw(html js json)) {
-          my $new_file = "${new_file_base}${ext}";
-          if (-f $new_file) {
-            $cached{$file}{scanh}{$new_file} = 1;
-            print "." if $opt_v;
-            $found_one = 1;
+        for my $space (qw(webpages mobile_webpages)) {
+          for my $ext (qw(html js json)) {
+            my $new_file = "$basedir/templates/$space/$new_file_name.$ext";
+            if (-f $new_file) {
+              $cached{$file}{scanh}{$new_file} = 1;
+              print "." if $opt_v;
+              $found_one = 1;
+            }
           }
         }
 
         if ($opt_c && !$found_one) {
-          print "W: missing HTML template: " . strip_base($new_file_base) . "{html,json,js} (referenced from " . strip_base($file) . ")\n";
+          print "W: missing HTML template: $new_file_name.{html,json,js} (referenced from " . strip_base($file) . ")\n";
         }
       }
 
@@ -566,15 +569,16 @@ sub unescape_template_string {
 }
 
 sub scanhtmlfile {
-  local *IN;
-
-  my $file = shift;
+  my ($file) = @_;
 
   return if defined $cached{$file};
 
+  my $template_space = $file =~ m{templates/(\w+)/} ? $1 : 'webpages';
+
   my %plugins = ( 'loaded' => { }, 'needed' => { } );
 
-  if (!open(IN, '<:encoding(utf8)', $file)) {
+  my $fh;
+  if (!open($fh, '<:encoding(utf8)', $file)) {
     print "E: template file '$file' not found\n";
     return;
   }
@@ -582,7 +586,7 @@ sub scanhtmlfile {
   my $copying  = 0;
   my $issubmit = 0;
   my $text     = "";
-  while (my $line = <IN>) {
+  while (my $line = <$fh>) {
     chomp($line);
 
     while ($line =~ m/\[\%[^\w]*use[^\w]+(\w+)[^\w]*?\%\]/gi) {
@@ -642,13 +646,13 @@ sub scanhtmlfile {
                       ([^\s]+)      # Beliebig viele Nicht-Whitespaces -- Dateiname
                       \.(html|js)   # Endung ".html" oder ".js", ansonsten kann es der Name eines Blocks sein
                      /ix) {
-      my $new_file_name = "$basedir/templates/webpages/$1.$2";
+      my $new_file_name = "$basedir/templates/$template_space/$1.$2";
       $cached{$file}{scanh}{$new_file_name} = 1;
       substr $line, $LAST_MATCH_START[1], $LAST_MATCH_END[0] - $LAST_MATCH_START[0], '';
     }
   }
 
-  close(IN);
+  close($fh);
 
   foreach my $plugin (keys %{ $plugins{needed} }) {
     next if ($plugins{loaded}->{$plugin});
@@ -691,7 +695,7 @@ sub scan_javascript_file {
   close($fh);
 }
 sub search_unused_htmlfiles {
-  my @unscanned_dirs = ('../../templates/webpages');
+  my @unscanned_dirs = ('../../templates/webpages', '../../templates/mobile_webpages');
 
   while (scalar @unscanned_dirs) {
     my $dir = shift @unscanned_dirs;
@@ -712,7 +716,7 @@ sub strip_base {
   my $s =  "$_[0]";             # Create a copy of the string.
 
   $s    =~ s|^../../||;
-  $s    =~ s|templates/webpages/||;
+  $s    =~ s|templates/\w+/||;
 
   return $s;
 }
@@ -771,8 +775,8 @@ locales.pl - Collect strings for translation in kivitendo
 locales.pl [options] lang_code
 
  Options:
-  -n, --no-custom-files  Do not process files whose name contains "_"
-  -c, --check-files      Run extended checks on HTML files
+  -c, --check-files      Run extended checks on HTML files (default)
+  -n, --no-check-files   Do not run extended checks on HTML files
   -f, --filenames        Show the filenames where new strings where found
   -v, --verbose          Be more verbose
   -h, --help             Show this help
@@ -781,15 +785,16 @@ locales.pl [options] lang_code
 
 =over 8
 
-=item B<-n>, B<--no-custom-files>
-
-Do not process files whose name contains "_", e.g. "custom_io.pl".
-
 =item B<-c>, B<--check-files>
 
 Run extended checks on the usage of templates. This can be used to
 discover HTML templates that are never used as well as the usage of
-non-existing HTML templates.
+non-existing HTML templates. This is enabled by default.
+
+=item B<-n>, B<--no-check-files>
+
+Do not run extended checks on the usage of templates. See
+C<--no-check-files>.
 
 =item B<-v>, B<--verbose>
 

@@ -39,7 +39,7 @@ use List::UtilsBy qw(sort_by);
 use SL::AP;
 use SL::FU;
 use SL::GL;
-use SL::Helper::Flash qw(flash);
+use SL::Helper::Flash qw(flash flash_later);
 use SL::IR;
 use SL::IS;
 use SL::ReportGenerator;
@@ -48,6 +48,7 @@ use SL::DB::Chart;
 use SL::DB::Currency;
 use SL::DB::Default;
 use SL::DB::Order;
+use SL::DB::PaymentTerm;
 use SL::DB::PurchaseInvoice;
 use SL::DB::RecordTemplate;
 use SL::DB::Tax;
@@ -129,17 +130,18 @@ sub load_record_template {
   $::form->{currency}         = $template->currency->name;
   $::form->{direct_debit}     = $template->direct_debit;
   $::form->{globalproject_id} = $template->project_id;
+  $::form->{payment_id}       = $template->payment_id;
   $::form->{AP_chart_id}      = $template->ar_ap_chart_id;
   $::form->{transdate}        = $today->to_kivitendo;
   $::form->{duedate}          = $today->to_kivitendo;
   $::form->{rowcount}         = @{ $template->items };
   $::form->{paidaccounts}     = 1;
-  $::form->{$_}               = $template->$_ for qw(department_id ordnumber taxincluded notes);
+  $::form->{$_}               = $template->$_ for qw(department_id ordnumber taxincluded notes transaction_description);
 
   if ($template->vendor) {
     $::form->{vendor_id} = $template->vendor_id;
     $::form->{vendor}    = $template->vendor->name;
-    $::form->{duedate}     = $template->vendor->payment->calc_date(reference_date => $today)->to_kivitendo if $template->vendor->payment;
+    $::form->{duedate}   = $template->vendor->payment->calc_date(reference_date => $today)->to_kivitendo if $template->vendor->payment;
   }
 
   my $row = 0;
@@ -204,20 +206,22 @@ sub save_record_template {
   } (1..($::form->{rowcount} || 1));
 
   $template->assign_attributes(
-    template_type  => 'ap_transaction',
-    template_name  => $new_name,
+    template_type           => 'ap_transaction',
+    template_name           => $new_name,
 
-    currency_id    => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
-    ar_ap_chart_id => $::form->{AP_chart_id}      || undef,
-    vendor_id      => $::form->{vendor_id}        || undef,
-    department_id  => $::form->{department_id}    || undef,
-    project_id     => $::form->{globalproject_id} || undef,
-    taxincluded    => $::form->{taxincluded}  ? 1 : 0,
-    direct_debit   => $::form->{direct_debit} ? 1 : 0,
-    ordnumber      => $::form->{ordnumber},
-    notes          => $::form->{notes},
+    currency_id             => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
+    ar_ap_chart_id          => $::form->{AP_chart_id}      || undef,
+    vendor_id               => $::form->{vendor_id}        || undef,
+    department_id           => $::form->{department_id}    || undef,
+    project_id              => $::form->{globalproject_id} || undef,
+    payment_id              => $::form->{payment_id}       || undef,
+    taxincluded             => $::form->{taxincluded}  ? 1 : 0,
+    direct_debit            => $::form->{direct_debit} ? 1 : 0,
+    ordnumber               => $::form->{ordnumber},
+    notes                   => $::form->{notes},
+    transaction_description => $::form->{transaction_description},
 
-    items          => \@items,
+    items                   => \@items,
   );
 
   eval {
@@ -252,7 +256,12 @@ sub add {
   $form->{transdate} = $form->{initial_transdate};
 
   if ($form->{vendor_id}) {
-    my $last_used_ap_chart = SL::DB::Vendor->load_cached($form->{vendor_id})->last_used_ap_chart;
+    my $vendor = SL::DB::Vendor->load_cached($form->{vendor_id});
+
+    # set initial payment terms
+    $form->{payment_id} = $vendor->payment_id;
+
+    my $last_used_ap_chart = $vendor->last_used_ap_chart;
     $form->{"AP_amount_chart_id_1"} = $last_used_ap_chart->id if $last_used_ap_chart;
   }
 
@@ -413,23 +422,9 @@ sub form_header {
 
   $form->{creditremaining_plus} = ($form->{creditremaining} =~ /-/) ? "0" : "1";
 
-  my @old_project_ids = ();
-  map(
-    {
-      if ($form->{"project_id_$_"}) {
-        push(@old_project_ids, $form->{"project_id_$_"});
-      }
-    }
-    (1..$form->{"rowcount"})
-  );
-
-  $form->get_lists("projects"  => { "key"       => "ALL_PROJECTS",
-                                    "all"       => 0,
-                                    "old_id"    => \@old_project_ids },
-                   "charts"    => { "key"       => "ALL_CHARTS",
+  $form->get_lists("charts"    => { "key"       => "ALL_CHARTS",
                                     "transdate" => $form->{transdate} },
-                   "taxcharts" => { "key"       => "ALL_TAXCHARTS",
-                                    "module"    => "AP" },);
+                  );
 
   map(
     { $_->{link_split} = [ split(/:/, $_->{link}) ]; }
@@ -438,10 +433,7 @@ sub form_header {
 
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
 
-  my %project_labels = ();
-  foreach my $item (@{ $form->{"ALL_PROJECTS"} }) {
-    $project_labels{$item->{id}} = $item->{projectnumber};
-  }
+  my %project_labels = map { $_->id => $_->projectnumber }  @{ SL::DB::Manager::Project->get_all };
 
   my %charts;
   my $default_ap_amount_chart_id;
@@ -460,10 +452,7 @@ sub form_header {
   my $follow_up_vc         = $form->{vendor_id} ? SL::DB::Vendor->load_cached($form->{vendor_id})->name : '';
   my $follow_up_trans_info =  "$form->{invnumber} ($follow_up_vc)";
 
-  $::request->layout->add_javascripts("autocomplete_chart.js", "show_vc_details.js", "show_history.js", "follow_up.js", "kivi.Draft.js", "kivi.GL.js", "kivi.RecordTemplate.js", "kivi.File.js", "kivi.AP.js", "kivi.CustomerVendor.js", "kivi.Validator.js");
-  my $transdate = $::form->{transdate} ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
-  my $first_taxchart;
-
+  $::request->layout->add_javascripts("autocomplete_chart.js", "show_vc_details.js", "show_history.js", "follow_up.js", "kivi.Draft.js", "kivi.SalesPurchase.js", "kivi.GL.js", "kivi.RecordTemplate.js", "kivi.File.js", "kivi.AP.js", "kivi.CustomerVendor.js", "kivi.Validator.js", "autocomplete_project.js");
   # $form->{totalpaid} is used by the action bar setup to determine
   # whether or not canceling is allowed. Therefore it must be
   # calculated prior to the action bar setup.
@@ -472,6 +461,12 @@ sub form_header {
   setup_ap_display_form_action_bar();
 
   $form->header();
+  # get the correct date for tax
+  my $transdate    = $::form->{transdate}    ? DateTime->from_kivitendo($::form->{transdate})    : DateTime->today_local;
+  my $deliverydate = $::form->{deliverydate} ? DateTime->from_kivitendo($::form->{deliverydate}) : undef;
+  my $taxdate      = $deliverydate ? $deliverydate : $transdate;
+  # helper for loop
+  my $first_taxchart;
 
   for my $i (1 .. $form->{rowcount}) {
 
@@ -480,9 +475,13 @@ sub form_header {
     $form->{"tax_$i"} = $form->format_amount(\%myconfig, $form->{"tax_$i"}, 2);
 
     my ($default_taxchart, $taxchart_to_use);
+    my $used_tax_id;
+    if ( $form->{"taxchart_$i"} ) {
+      ($used_tax_id) = split(/--/, $form->{"taxchart_$i"});
+    }
     my $amount_chart_id = $form->{"AP_amount_chart_id_$i"} || $default_ap_amount_chart_id;
-    my @taxcharts       = GL->get_active_taxes_for_chart($amount_chart_id, $transdate);
 
+    my @taxcharts       = GL->get_active_taxes_for_chart($amount_chart_id, $taxdate, $used_tax_id);
     foreach my $item (@taxcharts) {
       my $key             = $item->id . "--" . $item->rate;
       $first_taxchart   //= $item;
@@ -495,13 +494,24 @@ sub form_header {
     $form->{"selected_taxchart_$i"}  = $selected_taxchart;
     $form->{"AP_amount_chart_id_$i"} = $amount_chart_id;
     $form->{"taxcharts_$i"}          = \@taxcharts;
+
+    # reverse charge hack for template, display two taxes
+    if ($taxchart_to_use->reverse_charge_chart_id) {
+      my $tmpnetamount;
+      ($tmpnetamount, $form->{"tax_reverse_$i"}) = $form->calculate_tax($form->parse_amount(\%myconfig, $form->{"amount_$i"}),
+                                                                        $taxchart_to_use->rate, $form->{taxincluded}, 2        );
+
+      $form->{"tax_charge_$i"}  = $form->{"tax_reverse_$i"} * -1;
+      $form->{"tax_reverse_$i"} = $form->format_amount(\%myconfig, $form->{"tax_reverse_$i"}, 2);
+      $form->{"tax_charge_$i"}  = $form->format_amount(\%myconfig, $form->{"tax_charge_$i"}, 2);
+    }
   }
 
   $form->{taxchart_value_title_sub} = sub {
     my $item = shift;
     return [
       $item->{id} .'--'. $item->{rate},
-      $item->{taxdescription} .' '. ($item->{rate} * 100) .' %',
+      $item->{taxkey} . ' - ' . $item->{taxdescription} .' '. ($item->{rate} * 100) .' %',
     ];
   };
 
@@ -563,9 +573,11 @@ sub form_header {
 
   $form->{paid_missing} = $form->{invtotal_unformatted} - $form->{totalpaid};
 
+  $form->{payment_id} = $form->{invoice_obj}->{payment_id} // $form->{payment_id};
   print $form->parse_html_template('ap/form_header', {
     today => DateTime->today,
     currencies => SL::DB::Manager::Currency->get_all_sorted,
+    payment_terms => SL::DB::Manager::PaymentTerm->get_all_sorted(query => [ or => [ obsolete => 0, id => $form->{payment_id}*1 ]]),
   });
 
   $main::lxdebug->leave_sub();
@@ -637,7 +649,7 @@ sub update {
   map { $form->{$_} = $form->parse_amount(\%myconfig, $form->{$_}) }
     qw(exchangerate creditlimit creditremaining);
 
-  my @flds  = qw(amount AP_amount projectnumber oldprojectnumber project_id taxchart);
+  my @flds  = qw(amount AP_amount_chart_id projectnumber oldprojectnumber project_id taxchart tax);
   my $count = 0;
   my (@a, $j, $totaltax);
   for my $i (1 .. $form->{rowcount}) {
@@ -666,8 +678,14 @@ sub update {
 
   if (($form->{previous_vendor_id} || $form->{vendor_id}) != $form->{vendor_id}) {
     IR->get_vendor(\%::myconfig, $form);
+
+    my $vendor = SL::DB::Vendor->load_cached($form->{vendor_id});
+
+    # reset payment to new vendor
+    $form->{payment_id} = $vendor->payment_id;
+
     if (($form->{rowcount} == 1) && ($form->{amount_1} == 0)) {
-      my $last_used_ap_chart = SL::DB::Vendor->load_cached($form->{vendor_id})->last_used_ap_chart;
+      my $last_used_ap_chart = $vendor->last_used_ap_chart;
       $form->{"AP_amount_chart_id_1"} = $last_used_ap_chart->id if $last_used_ap_chart;
     }
   }
@@ -792,9 +810,16 @@ sub post {
 
   my $zero_amount_posting = 1;
   for my $i (1 .. $form->{rowcount}) {
+
+    # no taxincluded for reverse charge
+    my ($used_tax_id) = split(/--/, $form->{"taxchart_$i"});
+    my $tax = SL::DB::Manager::Tax->find_by(id => $used_tax_id);
+    if ($tax->reverse_charge_chart_id && $form->{taxincluded}) {
+      $form->error($locale->text('Cannot Post AP transaction with tax included!'));
+    }
+
     if ($form->parse_amount(\%myconfig, $form->{"amount_$i"})) {
       $zero_amount_posting = 0;
-      last;
     }
   }
 
@@ -851,13 +876,30 @@ sub post {
       $form->{what_done} = "invoice";
       $form->save_history;
     }
-    # no restore_from_session_id needed. we like to have a newly generated
-    # list of invoices for bank transactions
-    print $form->redirect_header($form->{callback}) if ($form->{callback} =~ /BankTransaction/);
-    $form->redirect($locale->text('AP transaction posted.') . ' ' . $locale->text('ID') . ': ' . $form->{id}) unless $inline;
-    # TODO Add callback/return flag in myconfig
-    # With version 3.5 we can add documents, but only after posting. there should be a flag in myconfig for the user
-    # $form->{callback} ||= 'ap.pl?action=edit&id=' . $form->{id} if $myconfig{no_reset_arap};
+
+    if (!$inline) {
+      my $msg = $locale->text("AP transaction '#1' posted (ID: #2)", $form->{invnumber}, $form->{id});
+      if ($form->{callback} =~ /BankTransaction/) {
+        # no restore_from_session_id needed. we like to have a newly generated
+        # list of invoices for bank transactions
+        SL::Helper::Flash::flash_later('info', $msg);
+        print $form->redirect_header($form->{callback});
+        $::dispatcher->end_request;
+
+      } elsif ('doc-tab' eq $form->{after_action}) {
+        # Redirect with callback containing a fragment does not work (by now)
+        # because the callback info is stored in the session an parsing the
+        # callback parameters does not support fragments (see SL::Form::redirect).
+        # So use flash_later for the message and redirect_headers for redirecting.
+        my $add_doc_url = build_std_url("script=ap.pl", 'action=edit', 'id=' . E($form->{id}), 'fragment=ui-tabs-docs');
+        SL::Helper::Flash::flash_later('info', $msg);
+        print $form->redirect_header($add_doc_url);
+        $::dispatcher->end_request;
+
+      } else {
+        $form->redirect($msg);
+      }
+    }
 
   } else {
     $form->error($locale->text('Cannot post transaction!'));
@@ -947,9 +989,9 @@ sub search {
 
   $form->{title} = $locale->text('Vendor Invoices & AP Transactions');
 
-  $form->get_lists(projects => { "key" => "ALL_PROJECTS", "all" => 1 });
-
   $::form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
+  $::form->{ALL_TAXZONES}    = SL::DB::Manager::TaxZone   ->get_all_sorted;
+
   # constants and subs for template
   $form->{vc_keys}   = sub { "$_[0]->{name}--$_[0]->{id}" };
 
@@ -1002,11 +1044,12 @@ sub ap_transactions {
   my @columns =
     qw(transdate id type invnumber ordnumber name netamount tax amount paid datepaid
        due duedate transaction_description notes employee globalprojectnumber department
-       vendornumber country ustid taxzone payment_terms charts direct_debit);
+       vendornumber country ustid taxzone payment_terms charts debit_chart direct_debit
+       insertdate);
 
   my @hidden_variables = map { "l_${_}" } @columns;
   push @hidden_variables, "l_subtotal", qw(open closed vendor invnumber ordnumber transaction_description notes project_id transdatefrom transdateto
-                                           parts_partnumber parts_description department_id);
+                                           parts_partnumber parts_description department_id taxzone_id);
 
   my $href = build_std_url('action=ap_transactions', grep { $form->{$_} } @hidden_variables);
 
@@ -1035,10 +1078,12 @@ sub ap_transactions {
     'taxzone'                 => { 'text' => $locale->text('Tax rate'), },
     'payment_terms'           => { 'text' => $locale->text('Payment Terms'), },
     'charts'                  => { 'text' => $locale->text('Chart'), },
+    'debit_chart'             => { 'text' => $locale->text('Debit Account'), },
     'direct_debit'            => { 'text' => $locale->text('direct debit'), },
+    'insertdate'              => { 'text' => $locale->text('Insert Date'), },
   );
 
-  foreach my $name (qw(id transdate duedate invnumber ordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit department)) {
+  foreach my $name (qw(id transdate duedate invnumber ordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit department taxzone)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $href . "&sort=$name&sortdir=$sortdir";
   }
@@ -1057,11 +1102,14 @@ sub ap_transactions {
 
   my $department_description;
   $department_description = SL::DB::Manager::Department->find_by(id => $form->{department_id})->description if $form->{department_id};
+  my $project_description;
+  $project_description = SL::DB::Manager::Project->find_by(id => $form->{project_id})->description if $form->{project_id};
 
   my @options;
   push @options, $locale->text('Vendor')                  . " : $form->{vendor}"                         if ($form->{vendor});
   push @options, $locale->text('Contact Person')          . " : $form->{cp_name}"                        if ($form->{cp_name});
   push @options, $locale->text('Department')              . " : $department_description"                 if ($form->{department_id});
+  push @options, $locale->text('Project')                 . " : $project_description"                    if ($project_description);
   push @options, $locale->text('Invoice Number')          . " : $form->{invnumber}"                      if ($form->{invnumber});
   push @options, $locale->text('Order Number')            . " : $form->{ordnumber}"                      if ($form->{ordnumber});
   push @options, $locale->text('Notes')                   . " : $form->{notes}"                          if ($form->{notes});
@@ -1198,19 +1246,21 @@ sub add_from_purchase_order {
   return if $order->type ne 'purchase_order';
 
   my $today                     = DateTime->today_local;
-  $::form->{title}              = "Add";
-  $::form->{vc}                 = 'vendor';
-  $::form->{vendor_id}          = $order->customervendor->id;
-  $::form->{vendor}             = $order->vendor->name;
-  $::form->{convert_from_oe_id} = $order->id;
-  $::form->{globalproject_id}   = $order->globalproject_id;
-  $::form->{ordnumber}          = $order->number;
-  $::form->{department_id}      = $order->department_id;
-  $::form->{currency}           = $order->currency->name;
-  $::form->{taxincluded}        = 1; # we use amount below, so tax is included
-  $::form->{transdate}          = $today->to_kivitendo;
-  $::form->{duedate}            = $today->to_kivitendo;
-  $::form->{duedate}            = $order->payment_terms->calc_date(reference_date => $today)->to_kivitendo if $order->payment_terms;
+  $::form->{title}                   = "Add";
+  $::form->{vc}                      = 'vendor';
+  $::form->{vendor_id}               = $order->customervendor->id;
+  $::form->{vendor}                  = $order->vendor->name;
+  $::form->{convert_from_oe_id}      = $order->id;
+  $::form->{globalproject_id}        = $order->globalproject_id;
+  $::form->{ordnumber}               = $order->number;
+  $::form->{department_id}           = $order->department_id;
+  $::form->{transaction_description} = $order->transaction_description;
+  $::form->{currency}                = $order->currency->name;
+  $::form->{taxincluded}             = 1; # we use amount below, so tax is included
+  $::form->{transdate}               = $today->to_kivitendo;
+  $::form->{duedate}                 = $today->to_kivitendo;
+  $::form->{duedate}                 = $order->payment_terms->calc_date(reference_date => $today)->to_kivitendo if $order->payment_terms;
+  $::form->{deliverydate}            = $order->reqdate->to_kivitendo                                            if $order->reqdate;
   create_links();
 
   my $config_po_ap_workflow_chart_id = $::instance_conf->get_workflow_po_ap_chart_id;
@@ -1320,6 +1370,38 @@ sub setup_ap_display_form_action_bar {
 
     $is_linked_bank_transaction = 1;
   }
+  my $is_linked_gl_transaction;
+  if ($::form->{id} && SL::DB::Manager::ApGl->find_by(ap_id => $::form->{id})) {
+    $is_linked_gl_transaction = 1;
+  }
+
+  my $create_post_action = sub {
+    # $_[0]: description
+    # $_[1]: after_action
+    action => [
+      $_[0],
+      submit   => [ '#form', { action => "post", after_action => $_[1] } ],
+      checks   => [ 'kivi.validate_form', 'kivi.AP.check_fields_before_posting', 'kivi.AP.check_duplicate_invnumber' ],
+      disabled => !$may_edit_create                           ? t8('You must not change this AP transaction.')
+                : $is_closed                                  ? t8('The billing period has already been locked.')
+                : $is_storno                                  ? t8('A canceled invoice cannot be posted.')
+                : ($::form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
+                : ($::form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
+                : $is_linked_bank_transaction                 ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                :                                               undef,
+    ],
+  };
+
+  my @post_entries;
+  if ($::instance_conf->get_ap_add_doc && $::instance_conf->get_doc_storage) {
+    @post_entries = ( $create_post_action->(t8('Post'), 'doc-tab'),
+                      $create_post_action->(t8('Post and new booking')) );
+  } elsif ($::instance_conf->get_doc_storage) {
+    @post_entries = ( $create_post_action->(t8('Post')),
+                      $create_post_action->(t8('Post and upload document'), 'doc-tab') );
+  } else {
+    @post_entries = ( $create_post_action->(t8('Post')) );
+  }
 
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
@@ -1331,20 +1413,8 @@ sub setup_ap_display_form_action_bar {
         accesskey => 'enter',
         disabled  => !$may_edit_create ? t8('You must not change this AP transaction.') : undef,
       ],
-
       combobox => [
-        action => [
-          t8('Post'),
-          submit   => [ '#form', { action => "post" } ],
-          checks   => [ 'kivi.validate_form', 'kivi.AP.check_fields_before_posting', 'kivi.AP.check_duplicate_invnumber' ],
-          disabled => !$may_edit_create                           ? t8('You must not change this AP transaction.')
-                    : $is_closed                                  ? t8('The billing period has already been locked.')
-                    : $is_storno                                  ? t8('A canceled invoice cannot be posted.')
-                    : ($::form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
-                    : ($::form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
-                    : $is_linked_bank_transaction                 ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
-                    :                                               undef,
-        ],
+        @post_entries,
         action => [
           t8('Post Payment'),
           submit   => [ '#form', { action => "post_payment" } ],
@@ -1375,6 +1445,7 @@ sub setup_ap_display_form_action_bar {
                     : $is_storno           ? t8('Reversal invoices cannot be canceled.')
                     : $::form->{totalpaid} ? t8('Invoices with payments cannot be canceled.')
                     : $has_sepa_exports    ? t8('This invoice has been linked with a sepa export, undo this first.')
+                    : $is_linked_gl_transaction ? t8('This transaction is linked with a gl transaction. Please delete the ap transaction booking if needed.')
                     :                        undef,
         ],
         action => [ t8('Delete'),
@@ -1382,12 +1453,13 @@ sub setup_ap_display_form_action_bar {
           confirm  => t8('Do you really want to delete this object?'),
           disabled => !$may_edit_create           ? t8('You must not change this AP transaction.')
                     : !$::form->{id}              ? t8('This invoice has not been posted yet.')
-                    : $change_never               ? t8('Changing invoices has been disabled in the configuration.')
-                    : $change_on_same_day_only    ? t8('Invoices can only be changed on the day they are posted.')
-                    : $has_storno                 ? t8('This invoice has been canceled already.')
                     : $is_closed                  ? t8('The billing period has already been locked.')
                     : $has_sepa_exports           ? t8('This invoice has been linked with a sepa export, undo this first.')
                     : $is_linked_bank_transaction ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                    : $is_linked_gl_transaction   ? undef # linked transactions can be deleted, if period is not closed
+                    : $change_never               ? t8('Changing invoices has been disabled in the configuration.')
+                    : $change_on_same_day_only    ? t8('Invoices can only be changed on the day they are posted.')
+                    : $has_storno                 ? t8('This invoice has been canceled already.')
                     :                               undef,
         ],
       ], # end of combobox "Storno"

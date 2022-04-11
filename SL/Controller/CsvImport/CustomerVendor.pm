@@ -68,7 +68,7 @@ sub check_objects {
   my %vcs_by_number = map { ( $_->$numbercolumn => $_ ) } @{ $self->existing_objects };
   my $methods       = $self->controller->headers->{methods};
 
-  my $i;
+  my $i = 0;
   my $num_data = scalar @{ $self->controller->data };
   foreach my $entry (@{ $self->controller->data }) {
     $self->controller->track_progress(progress => $i/$num_data * 100) if $i % 100 == 0;
@@ -82,7 +82,6 @@ sub check_objects {
     $self->check_taxzone($entry,  take_default => 1);
     $self->check_currency($entry, take_default => 1);
     $self->check_salesman($entry);
-    $self->handle_cvars($entry);
 
     next if @{ $entry->{errors} };
 
@@ -92,7 +91,7 @@ sub check_objects {
     push @{ $entry->{information} }, $::locale->text('Illegal characters have been removed from the following fields: #1', join(', ', @cleaned_fields))
       if @cleaned_fields;
 
-    my $existing_vc = $vcs_by_number{ $object->$numbercolumn };
+    my $existing_vc = $object->$numbercolumn ? $vcs_by_number{ $object->$numbercolumn } : undef;
     if (!$existing_vc) {
       $vcs_by_number{ $object->$numbercolumn } = $object if $object->$numbercolumn;
 
@@ -105,14 +104,14 @@ sub check_objects {
 
       $existing_vc->$_( $entry->{object}->$_ ) for @{ $methods }, keys %{ $self->clone_methods };
 
-      $self->handle_cvars($entry);
-      $existing_vc->custom_variables($entry->{object}->custom_variables);
-
       push @{ $entry->{information} }, $::locale->text('Updating existing entry in database');
 
     } else {
       $object->$numbercolumn('####');
     }
+
+    $self->handle_cvars($entry);
+
   } continue {
     $i++;
   }
@@ -241,21 +240,10 @@ sub save_objects {
   my ($self, %params) = @_;
 
   my $numbercolumn   = $self->table . 'number';
-  my $with_number    = [ grep { $_->{object}->$numbercolumn ne '####' } @{ $self->controller->data } ];
-  my $without_number = [ grep { $_->{object}->$numbercolumn eq '####' } @{ $self->controller->data } ];
+  my $with_number    = [ grep { ($_->{object}->$numbercolumn || '') ne '####' } @{ $self->controller->data } ];
+  my $without_number = [ grep { ($_->{object}->$numbercolumn || '') eq '####' } @{ $self->controller->data } ];
 
-  foreach my $entry (@{$with_number}, @{$without_number}) {
-    my $object = $entry->{object};
-
-    my $number = SL::TransNumber->new(type        => $self->table(),
-                                      number      => $object->$numbercolumn(),
-                                      business_id => $object->business_id(),
-                                      save        => 1);
-
-    if ( $object->$numbercolumn eq '####' || !$number->is_unique() ) {
-      $object->$numbercolumn($number->create_unique());
-    }
-  }
+  $_->{object}->$numbercolumn('') for @{ $without_number };
 
   $self->SUPER::save_objects(data => $with_number);
   $self->SUPER::save_objects(data => $without_number);

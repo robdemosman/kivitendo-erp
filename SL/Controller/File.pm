@@ -8,13 +8,16 @@ use List::Util qw(first max);
 
 use utf8;
 use Encode qw(decode);
+use English qw( -no_match_vars );
 use URI::Escape;
 use Cwd;
 use DateTime;
 use File::stat;
+use File::Slurp qw(slurp);
 use File::Spec::Unix;
 use File::Spec::Win32;
 use File::MimeInfo::Magic;
+use MIME::Base64;
 use SL::DB::Helper::Mappings;
 use SL::DB::Order;
 use SL::DB::DeliveryOrder;
@@ -29,8 +32,9 @@ use SL::JSON;
 use SL::Helper::CreatePDF qw(:all);
 use SL::Locale::String;
 use SL::SessionFile;
+use SL::SessionFile::Random;
 use SL::File;
-use SL::Controller::Helper::ThumbnailCreator qw(file_probe_image_type);
+use SL::Controller::Helper::ThumbnailCreator qw(file_probe_image_type file_probe_type);
 
 use constant DO_DELETE   => 0;
 use constant DO_UNIMPORT => 1;
@@ -43,24 +47,35 @@ use Rose::Object::MakeMethods::Generic
 
 __PACKAGE__->run_before('check_object_params', only => [ qw(list ajax_delete ajax_importdialog ajax_import ajax_unimport ajax_upload ajax_files_uploaded) ]);
 
+# gen:    bitmask: bit 1 (value is 1, 3, 5 or 7) => file created
+#                  bit 2 (value is 2, 3, 6 or 7) => file from other source (e.g. directory for scanned documents)
+#                  bit 3 (value is 4, 5, 6 or 7) => upload as other source
+# gltype: is this used somewhere?
+# dir:    is this used somewhere?
+# model:  base name of the rose model
+# right:  access right used for import
 my %file_types = (
-  'sales_quotation'         => { gen => 1, gltype => '',   dir =>'SalesQuotation',       model => 'Order',          right => 'import_ar'  },
-  'sales_order'             => { gen => 1, gltype => '',   dir =>'SalesOrder',           model => 'Order',          right => 'import_ar'  },
-  'sales_delivery_order'    => { gen => 1, gltype => '',   dir =>'SalesDeliveryOrder',   model => 'DeliveryOrder',  right => 'import_ar'  },
-  'invoice'                 => { gen => 1, gltype => 'ar', dir =>'SalesInvoice',         model => 'Invoice',        right => 'import_ar'  },
-  'credit_note'             => { gen => 1, gltype => '',   dir =>'CreditNote',           model => 'Invoice',        right => 'import_ar'  },
-  'request_quotation'       => { gen => 3, gltype => '',   dir =>'RequestForQuotation',  model => 'Order',          right => 'import_ap'  },
-  'purchase_order'          => { gen => 3, gltype => '',   dir =>'PurchaseOrder',        model => 'Order',          right => 'import_ap'  },
-  'purchase_delivery_order' => { gen => 3, gltype => '',   dir =>'PurchaseDeliveryOrder',model => 'DeliveryOrder',  right => 'import_ap'  },
-  'purchase_invoice'        => { gen => 2, gltype => 'ap', dir =>'PurchaseInvoice',      model => 'PurchaseInvoice',right => 'import_ap'  },
-  'vendor'                  => { gen => 0, gltype => '',   dir =>'Vendor',               model => 'Vendor',         right => 'xx'         },
-  'customer'                => { gen => 1, gltype => '',   dir =>'Customer',             model => 'Customer',       right => 'xx'         },
-  'part'                    => { gen => 0, gltype => '',   dir =>'Part',                 model => 'Part',           right => 'xx'         },
-  'gl_transaction'          => { gen => 2, gltype => 'gl', dir =>'GeneralLedger',        model => 'GLTransaction',  right => 'import_ap'  },
-  'draft'                   => { gen => 0, gltype => '',   dir =>'Draft',                model => 'Draft',          right => 'xx'         },
-  'csv_customer'            => { gen => 1, gltype => '',   dir =>'Reports',              model => 'Customer',       right => 'xx'         },
-  'csv_vendor'              => { gen => 1, gltype => '',   dir =>'Reports',              model => 'Vendor',         right => 'xx'         },
-  'shop_image'              => { gen => 0, gltype => '',   dir =>'ShopImages',           model => 'Part',           right => 'xx'         },
+  'sales_quotation'             => { gen => 1, gltype => '',   dir =>'SalesQuotation',       model => 'Order',          right => 'import_ar'  },
+  'sales_order'                 => { gen => 5, gltype => '',   dir =>'SalesOrder',           model => 'Order',          right => 'import_ar'  },
+  'sales_delivery_order'        => { gen => 1, gltype => '',   dir =>'SalesDeliveryOrder',   model => 'DeliveryOrder',  right => 'import_ar'  },
+  'invoice'                     => { gen => 1, gltype => 'ar', dir =>'SalesInvoice',         model => 'Invoice',        right => 'import_ar'  },
+  'invoice_for_advance_payment' => { gen => 1, gltype => 'ar', dir =>'SalesInvoice',         model => 'Invoice',        right => 'import_ar'  },
+  'final_invoice'               => { gen => 1, gltype => 'ar', dir =>'SalesInvoice',         model => 'Invoice',        right => 'import_ar'  },
+  'credit_note'                 => { gen => 1, gltype => '',   dir =>'CreditNote',           model => 'Invoice',        right => 'import_ar'  },
+  'request_quotation'           => { gen => 7, gltype => '',   dir =>'RequestForQuotation',  model => 'Order',          right => 'import_ap'  },
+  'purchase_order'              => { gen => 7, gltype => '',   dir =>'PurchaseOrder',        model => 'Order',          right => 'import_ap'  },
+  'purchase_delivery_order'     => { gen => 7, gltype => '',   dir =>'PurchaseDeliveryOrder',model => 'DeliveryOrder',  right => 'import_ap'  },
+  'purchase_invoice'            => { gen => 6, gltype => 'ap', dir =>'PurchaseInvoice',      model => 'PurchaseInvoice',right => 'import_ap'  },
+  'vendor'                      => { gen => 0, gltype => '',   dir =>'Vendor',               model => 'Vendor',         right => 'xx'         },
+  'customer'                    => { gen => 1, gltype => '',   dir =>'Customer',             model => 'Customer',       right => 'xx'         },
+  'project'                     => { gen => 0, gltype => '',   dir =>'Project',              model => 'Project',        right => 'xx'         },
+  'part'                        => { gen => 0, gltype => '',   dir =>'Part',                 model => 'Part',           right => 'xx'         },
+  'gl_transaction'              => { gen => 6, gltype => 'gl', dir =>'GeneralLedger',        model => 'GLTransaction',  right => 'import_ap'  },
+  'draft'                       => { gen => 0, gltype => '',   dir =>'Draft',                model => 'Draft',          right => 'xx'         },
+  'csv_customer'                => { gen => 1, gltype => '',   dir =>'Reports',              model => 'Customer',       right => 'xx'         },
+  'csv_vendor'                  => { gen => 1, gltype => '',   dir =>'Reports',              model => 'Vendor',         right => 'xx'         },
+  'shop_image'                  => { gen => 0, gltype => '',   dir =>'ShopImages',           model => 'Part',           right => 'xx'         },
+  'letter'                      => { gen => 7, gltype => '',   dir =>'Letter',               model => 'Letter',         right => 'sales_letter_edit | purchase_letter_edit' },
 );
 
 #--- 4 locale ---#
@@ -287,7 +302,10 @@ sub action_ajax_files_uploaded {
 
 sub action_download {
   my ($self) = @_;
-  my ($id, $version) = split /_/, $::form->{id};
+
+  my $id      = $::form->{id};
+  my $version = $::form->{version};
+
   my $file = SL::File->get(id => $id );
   $file->version($version) if $version;
   my $ref  = $file->get_content;
@@ -298,6 +316,26 @@ sub action_download {
     );
   }
 }
+
+sub action_ajax_get_thumbnail {
+  my ($self) = @_;
+
+  my $id      = $::form->{file_id};
+  my $version = $::form->{file_version};
+  my $file    = SL::File->get(id => $id);
+
+  $file->version($version) if $version;
+
+  my $thumbnail = _create_thumbnail($file, $::form->{size});
+
+  my $overlay_selector  = '#enlarged_thumb_' . $id;
+  $overlay_selector    .= '_' . $version            if $version;
+  $self->js
+    ->attr($overlay_selector, 'src', 'data:' . $thumbnail->{thumbnail_img_content_type} . ';base64,' . MIME::Base64::encode_base64($thumbnail->{thumbnail_img_content}))
+    ->data($overlay_selector, 'is-overlay-loaded', '1')
+    ->render;
+}
+
 
 #
 # filters
@@ -370,7 +408,7 @@ sub _do_list {
   if ( $self->file_type eq 'document' ) {
     my @object_types;
     push @object_types, $self->object_type;
-    push @object_types, qw(dunning dunning1 dunning2 dunning3) if $self->object_type eq 'invoice'; # hardcoded object types?
+    push @object_types, qw(dunning1 dunning2 dunning3 dunning_invoice dunning_orig_invoice) if $self->object_type eq 'invoice'; # hardcoded object types?
     @files = SL::File->get_all_versions(object_id   => $self->object_id,
                                         object_type => \@object_types,
                                         file_type   => $self->file_type,
@@ -384,6 +422,8 @@ sub _do_list {
                                 );
   }
   $self->files(\@files);
+
+  $_->{thumbnail} = _create_thumbnail($_) for @files;
 
   if($self->object_type eq 'shop_image'){
     $self->js
@@ -401,7 +441,7 @@ sub _get_from_import {
   my $language = $::lx_office_conf{system}->{language};
   my $timezone = $::locale->get_local_time_zone()->name;
   if (opendir my $dir, $path) {
-    my @files = ( readdir $dir);
+    my @files = (readdir $dir);
     foreach my $file ( @files) {
       next if (($file eq '.') || ($file eq '..'));
       $file = Encode::decode('utf-8', $file);
@@ -423,7 +463,12 @@ sub _get_from_import {
       };
 
     }
+    closedir($dir);
+
+  } else {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_get_from_import opendir failed to open dir " . $path);
   }
+
   return @foundfiles;
 }
 
@@ -486,6 +531,27 @@ sub _get_sources {
   my @sources;
   if ( $self->file_type eq 'document' ) {
     # TODO statt gen neue attribute in filetypes :
+    if (($file_types{$self->object_type}->{gen}*1 & 4)==4) {
+      # bit 3 is set => means upload
+      my $source = {
+        'name'         => 'uploaded',
+        'title'        => $main::locale->text('uploaded Documents'),
+        'chk_action'   => 'uploaded_documents_delete',
+        'chk_title'    => $main::locale->text('Delete Documents'),
+        'chkall_title' => $main::locale->text('Delete all'),
+        'file_title'   => $main::locale->text('filename'),
+        'confirm_text' => $main::locale->text('delete'),
+        'can_rename'   => 1,
+        'are_existing' => $self->existing ? 1 : 0,
+        'rename_title' => $main::locale->text('Rename Attachments'),
+        'can_upload'   => 1,
+        'can_delete'   => 1,
+        'upload_title' => $main::locale->text('Upload Documents'),
+        'done_text'    => $main::locale->text('deleted')
+      };
+      push @sources , $source;
+    }
+
     if (($file_types{$self->object_type}->{gen}*1 & 1)==1) {
       my $gendata = {
         'name'         => 'created',
@@ -502,6 +568,7 @@ sub _get_sources {
       };
       push @sources , $gendata;
     }
+
     if (($file_types{$self->object_type}->{gen}*1 & 2)==2) {
       my @others =  SL::File->get_other_sources();
       foreach my $scanner_or_mailrx (@others) {
@@ -564,6 +631,74 @@ sub _get_sources {
     push @sources , $attdata;
   }
   return @sources;
+}
+
+# ignores all errros
+# todo: cache thumbs?
+sub _create_thumbnail {
+  my ($file, $size) = @_;
+
+  $size //= 64;
+
+  my $filename;
+  if (!eval { $filename = $file->get_file(); 1; }) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_create_thumbnail get_file failed: " . $EVAL_ERROR);
+    return;
+  }
+
+  # Workaround for pfds which are not handled by file_probe_type.
+  # Maybe use mime info stored in db?
+  my $mime_type = File::MimeInfo::Magic::magic($filename);
+  if ($mime_type =~ m{pdf}) {
+    $filename = _convert_pdf_to_png($filename, size => $size);
+  }
+  return if !$filename;
+
+  my $content;
+  if (!eval { $content = slurp $filename; 1; }) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_create_thumbnail slurp failed: " . $EVAL_ERROR);
+    return;
+  }
+
+  my $ret;
+  if (!eval { $ret = file_probe_type($content, size => $size); 1; }) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_create_thumbnail file_probe_type failed: " . $EVAL_ERROR);
+    return;
+  }
+
+  # file_probe_type returns a hash ref with thumbnail info and content
+  # or an error message
+  if ('HASH' ne ref $ret) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_create_thumbnail file_probe_type returned an error: " . $ret);
+    return;
+  }
+
+  return $ret;
+}
+
+sub _convert_pdf_to_png {
+  my ($filename, %params) = @_;
+
+  my $size    = $params{size} // 64;
+  my $sfile   = SL::SessionFile::Random->new();
+  unless (-f $filename) {
+    $::lxdebug->message(LXDebug::WARN(), "_convert_pdf_to_png failed, no file found: $filename");
+    return;
+  }
+  # quotemeta for storno case "storno\ zu\ 1020" *nix only
+  my $command = 'pdftoppm -singlefile -scale-to ' . $size . ' -png' . ' ' . quotemeta($filename) . ' ' . $sfile->file_name;
+
+  if (system($command) == -1) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_convert_pdf_to_png: system call failed: " . $ERRNO);
+    return;
+  }
+  if ($CHILD_ERROR) {
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_convert_pdf_to_png: pdftoppm failed with error code: " . ($CHILD_ERROR >> 8));
+    $::lxdebug->message(LXDebug::WARN(), "SL::File::_convert_pdf_to_png: File: $filename");
+    return;
+  }
+
+  return $sfile->file_name . '.png';
 }
 
 1;

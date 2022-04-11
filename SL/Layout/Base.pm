@@ -3,6 +3,7 @@ package SL::Layout::Base;
 use strict;
 use parent qw(Rose::Object);
 
+use File::Slurp qw(read_file);
 use List::MoreUtils qw(uniq);
 use Time::HiRes qw();
 
@@ -19,6 +20,7 @@ use Rose::Object::MakeMethods::Generic (
 
 use SL::Menu;
 use SL::Presenter;
+use SL::System::Process;
 
 my %menu_cache;
 
@@ -36,14 +38,37 @@ sub init_sublayouts_by_name {
   {}
 }
 
+sub webpages_path {
+  "templates/webpages";
+}
+
 sub get {
   $_[0]->sub_layouts;
   return grep { $_ } ($_[0]->sub_layouts_by_name->{$_[1]});
 }
 
 sub init_auto_reload_resources_param {
-  return '' unless $::lx_office_conf{debug}->{auto_reload_resources};
-  return sprintf('?rand=%d-%d-%d', Time::HiRes::gettimeofday(), int(rand 1000000000000));
+  if ($::lx_office_conf{debug}->{auto_reload_resources}) {
+    return sprintf('?rand=%d-%d-%d', Time::HiRes::gettimeofday(), int(rand 1000000000000));
+  }
+
+  if ($::lx_office_conf{debug}{git_commit_reload_resources}) {
+    my $git_dir = SL::System::Process::exe_dir() . '/.git';
+
+    return '' unless -d $git_dir;
+
+    my $content = eval { scalar(read_file($git_dir . '/HEAD')) };
+
+    return '' unless ($content // '') =~ m{\Aref: ([^\r\n]+)};
+
+    $content = eval { scalar(read_file($git_dir . '/' . $1)) };
+
+    return '' unless ($content // '') =~ m{\A([0-9a-fA-F]+)};
+
+    return '?rand=' . $1;
+  }
+
+  return '';
 }
 
 ##########################################
@@ -82,8 +107,11 @@ sub init_sub_layouts_by_name { +{} }
 
 
 #########################################
-# Interface
+# Stylesheets
 ########################################
+
+# override in sub layouts
+sub static_stylesheets {}
 
 sub add_stylesheets {
   &use_stylesheet;
@@ -92,7 +120,7 @@ sub add_stylesheets {
 sub use_stylesheet {
   my $self = shift;
   push @{ $self->{stylesheets} ||= [] }, @_ if @_;
-  @{ $self->{stylesheets} ||= [] };
+    (map { $_->use_stylesheet } $self->sub_layouts), $self->static_stylesheets, @{ $self->{stylesheets} ||= [] };
 }
 
 sub stylesheets {
@@ -100,7 +128,7 @@ sub stylesheets {
   my $css_path = $self->get_stylesheet_for_user;
 
   return uniq grep { $_ } map { $self->_find_stylesheet($_, $css_path)  }
-    $self->use_stylesheet, map { $_->stylesheets } $self->sub_layouts;
+    $self->use_stylesheet;
 }
 
 sub _find_stylesheet {
@@ -109,6 +137,7 @@ sub _find_stylesheet {
   return "$css_path/$stylesheet" if -f "$css_path/$stylesheet";
   return "css/$stylesheet"       if -f "css/$stylesheet";
   return $stylesheet             if -f $stylesheet;
+  return $stylesheet             if $stylesheet =~ /^http/; # external
 }
 
 sub get_stylesheet_for_user {
@@ -128,6 +157,13 @@ sub get_stylesheet_for_user {
   return $css_path;
 }
 
+#########################################
+# Javascripts
+########################################
+
+# override in sub layouts
+sub static_javascripts {}
+
 sub add_javascripts {
   &use_javascript
 }
@@ -135,14 +171,14 @@ sub add_javascripts {
 sub use_javascript {
   my $self = shift;
   push @{ $self->{javascripts} ||= [] }, @_ if @_;
-  @{ $self->{javascripts} ||= [] };
+  map({ $_->use_javascript } $self->sub_layouts), $self->static_javascripts, @{ $self->{javascripts} ||= [] };
 }
 
 sub javascripts {
   my ($self) = @_;
 
   return uniq grep { $_ } map { $self->_find_javascript($_)  }
-    map({ $_->javascripts } $self->sub_layouts), $self->use_javascript;
+     $self->use_javascript;
 }
 
 sub _find_javascript {
@@ -150,6 +186,7 @@ sub _find_javascript {
 
   return "js/$javascript"        if -f "js/$javascript";
   return $javascript             if -f $javascript;
+  return $javascript             if $javascript =~ /^http/;
 }
 
 
@@ -262,14 +299,32 @@ For the C<*_content> callbacks this works if you just remember to dispatch to th
     $_[0]->SUPER::post_content
   }
 
-For the stylesheet and javascript callbacks things are hard, because of the
-backwards compatibility, and the built-in sanity checks. The best way currently
-is to just add your content and dispatch to the base method.
 
-  sub stylesheets {
-    $_[0]->add_stylesheets(qw(mystyle1.css mystyle2.css);
-    $_[0]->SUPER::stylesheets;
+Stylesheets and Javascripts can be added to every layout and sub-layout at
+runtime with L<SL::Layout::Dispatcher/add_stylesheets> and
+L<SL::Layout::Dispatcher/add_javascripts> (C<use_stylesheets> and
+C<use_javascripts> are aliases for backwards compatibility):
+
+  $layout->add_stylesheets("custom.css");
+  $layout->add_javascripts("app.js", "widget.js");
+
+Or they can be overwritten in sub layouts with the calls
+L<SL::Layout::Displatcher/static_stylesheets> and
+L<SL::Layout::Dispatcher/static_javascripts>:
+
+  sub static_stylesheets {
+    "custom.css"
   }
+
+  sub static_javascripts {
+    qw(app.css widget.js)
+  }
+
+Note how these are relative to the base dirs of the currently selected
+stylesheets. Javascripts are resolved relative to the C<js/> basedir.
+
+Setting directly with C<stylesheets> and C<javascripts> is eprecated.
+
 
 =head1 GORY DETAILS ABOUT JAVASCRIPT AND STYLESHEET OVERLOADING
 

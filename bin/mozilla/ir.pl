@@ -33,6 +33,8 @@
 #======================================================================
 
 use SL::FU;
+use SL::Helper::Flash qw(flash_later);
+use SL::Helper::UserPreferences::DisplayPreferences;
 use SL::IR;
 use SL::IS;
 use SL::DB::BankTransactionAccTrans;
@@ -55,9 +57,10 @@ use strict;
 # end of main
 
 sub _may_view_or_edit_this_invoice {
-  return 1 if  $::auth->assert('ap_transactions', 1); # may edit all invoices
-  return 0 if !$::form->{id};                         # creating new invoices isn't allowed without invoice_edit
-  return 0 if !$::form->{globalproject_id};           # existing records without a project ID are not allowed
+  return 1 if  $::auth->assert('ap_transactions', 1);       # may edit all invoices
+  return 0 if !$::form->{id};                               # creating new invoices isn't allowed without invoice_edit
+  return 1 if  $::auth->assert('purchase_invoice_view', 1); # viewing is allowed with this right
+  return 0 if !$::form->{globalproject_id};                 # existing records without a project ID are not allowed
   return SL::DB::Project->new(id => $::form->{globalproject_id})->load->may_employee_view_project_invoices(SL::DB::Manager::Employee->current);
 }
 
@@ -259,6 +262,35 @@ sub setup_ir_action_bar {
 
     $is_linked_bank_transaction = 1;
   }
+
+  my $create_post_action = sub {
+    # $_[0]: description
+    # $_[1]: after_action
+    action => [
+      $_[0],
+      submit   => [ '#form', { action => "post", after_action => $_[1] } ],
+      checks   => [ 'kivi.validate_form' ],
+      checks   => [ 'kivi.validate_form', 'kivi.AP.check_fields_before_posting', 'kivi.AP.check_duplicate_invnumber' ],
+      disabled => !$may_edit_create                         ? t8('You must not change this invoice.')
+                : $form->{locked}                           ? t8('The billing period has already been locked.')
+                : $form->{storno}                           ? t8('A canceled invoice cannot be posted.')
+                : ($form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
+                : ($form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
+                : $is_linked_bank_transaction               ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
+                :                                             undef,
+    ],
+  };
+
+  my @post_entries;
+  if ($::instance_conf->get_ir_add_doc && $::instance_conf->get_doc_storage) {
+    @post_entries = ( $create_post_action->(t8('Post'), 'doc-tab') );
+  } elsif ($::instance_conf->get_doc_storage) {
+    @post_entries = ( $create_post_action->(t8('Post')),
+                      $create_post_action->(t8('Post and upload document'), 'doc-tab') );
+  } else {
+    @post_entries = ( $create_post_action->(t8('Post')) );
+  }
+
   for my $bar ($::request->layout->get('actionbar')) {
     $bar->add(
       action => [
@@ -268,21 +300,8 @@ sub setup_ir_action_bar {
         accesskey => 'enter',
         disabled  => !$may_edit_create ? t8('You must not change this invoice.') : undef,
       ],
-
       combobox => [
-        action => [
-          t8('Post'),
-          submit   => [ '#form', { action => "post" } ],
-          checks   => [ 'kivi.validate_form' ],
-          checks   => [ 'kivi.validate_form', 'kivi.AP.check_fields_before_posting', 'kivi.AP.check_duplicate_invnumber' ],
-          disabled => !$may_edit_create                         ? t8('You must not change this invoice.')
-                    : $form->{locked}                           ? t8('The billing period has already been locked.')
-                    : $form->{storno}                           ? t8('A canceled invoice cannot be posted.')
-                    : ($form->{id} && $change_never)            ? t8('Changing invoices has been disabled in the configuration.')
-                    : ($form->{id} && $change_on_same_day_only) ? t8('Invoices can only be changed on the day they are posted.')
-                    : $is_linked_bank_transaction               ? t8('This transaction is linked with a bank transaction. Please undo and redo the bank transaction booking if needed.')
-                    :                                             undef,
-        ],
+        @post_entries,
         action => [
           t8('Post Payment'),
           submit   => [ '#form', { action => "post_payment" } ],
@@ -349,7 +368,7 @@ sub setup_ir_action_bar {
         action => [ t8('more') ],
         action => [
           t8('History'),
-          call     => [ 'set_history_window', $::form->{id} * 1, 'id', 'glid' ],
+          call     => [ 'set_history_window', $::form->{id} * 1, 'glid' ],
           disabled => !$form->{id} ? t8('This invoice has not been posted yet.') : undef,
         ],
         action => [
@@ -438,9 +457,10 @@ sub form_header {
     $form->{"select$item"} =~ s/option>\Q$form->{$item}\E/option selected>$form->{$item}/;
   }
 
-  $TMPL_VAR{is_format_html}      = $form->{format} eq 'html';
-  $TMPL_VAR{dateformat}          = $myconfig{dateformat};
-  $TMPL_VAR{numberformat}        = $myconfig{numberformat};
+  $TMPL_VAR{is_format_html}                         = $form->{format} eq 'html';
+  $TMPL_VAR{dateformat}                             = $myconfig{dateformat};
+  $TMPL_VAR{numberformat}                           = $myconfig{numberformat};
+  $TMPL_VAR{longdescription_dialog_size_percentage} = SL::Helper::UserPreferences::DisplayPreferences->new()->get_longdescription_dialog_size_percentage();
 
   # hiddens
   $TMPL_VAR{HIDDENS} = [qw(
@@ -451,7 +471,7 @@ sub form_header {
     shiptoemail shiptodepartment_1 shiptodepartment_2 message email subject cc bcc taxaccounts cursor_fokus
     convert_from_do_ids convert_from_oe_ids convert_from_ap_ids show_details gldate useasnew
   ), @custom_hiddens,
-  map { $_.'_rate', $_.'_description', $_.'_taxnumber' } split / /, $form->{taxaccounts}];
+  map { $_.'_rate', $_.'_description', $_.'_taxnumber', $_.'_tax_id' } split / /, $form->{taxaccounts}];
 
   $TMPL_VAR{payment_terms_obj} = get_payment_terms_for_invoice();
   $form->{duedate}             = $TMPL_VAR{payment_terms_obj}->calc_date(reference_date => $form->{invdate}, due_date => $form->{duedate})->to_kivitendo if $TMPL_VAR{payment_terms_obj};
@@ -935,12 +955,21 @@ sub post {
       $form->save_history;
     }
     # /saving the history
-    $form->{callback} = 'ir.pl?action=add';
-    $form->redirect(  $locale->text('Invoice')
-                  . " $form->{invnumber} "
-                  . ", " . $locale->text('ID')
-                  . ': ' . $form->{id} . ' '
-                  . $locale->text('posted!'));
+
+    my $redirect_url;
+    if ('doc-tab' eq $form->{after_action}) {
+      $redirect_url = build_std_url("script=ir.pl", 'action=edit', 'id=' . E($form->{id}), 'fragment=ui-tabs-docs');
+    } else {
+      $redirect_url = build_std_url("script=ir.pl", 'action=edit', 'id=' . E($form->{id}));
+    }
+    SL::Helper::Flash::flash_later('info',
+                                   $locale->text('Invoice')
+                                   . " $form->{invnumber} "
+                                   . ", " . $locale->text('ID')
+                                   . ': ' . $form->{id} . ' '
+                                   . $locale->text('posted!'));
+    print $form->redirect_header($redirect_url);
+    $::dispatcher->end_request;
   }
   $form->error($locale->text('Cannot post invoice!'));
 

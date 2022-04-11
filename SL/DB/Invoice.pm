@@ -13,9 +13,12 @@ use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::FlattenToForm;
 use SL::DB::Helper::LinkedRecords;
+use SL::DB::Helper::PDF_A;
 use SL::DB::Helper::PriceTaxCalculator;
 use SL::DB::Helper::PriceUpdater;
+use SL::DB::Helper::SalesPurchaseInvoice;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::DB::Helper::ZUGFeRD;
 use SL::Locale::String qw(t8);
 use SL::DB::CustomVariable;
 
@@ -154,7 +157,7 @@ sub new_from {
   my (@columns, @item_columns, $item_parent_id_column, $item_parent_column);
 
   if (ref($source) eq 'SL::DB::Order') {
-    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id);
+    @columns      = qw(quonumber delivery_customer_id delivery_vendor_id tax_point);
     @item_columns = qw(subtotal);
 
     $item_parent_id_column = 'trans_id';
@@ -171,8 +174,9 @@ sub new_from {
   $terms = $source->customer->payment_terms if !defined $terms && $source->customer;
 
   my %args = ( map({ ( $_ => $source->$_ ) } qw(customer_id taxincluded shippingpoint shipvia notes intnotes salesman_id cusordnumber ordnumber department_id
-                                                cp_id language_id taxzone_id globalproject_id transaction_description currency_id delivery_term_id), @columns),
-               transdate   => DateTime->today_local,
+                                                cp_id language_id taxzone_id tax_point globalproject_id transaction_description currency_id delivery_term_id
+                                                billing_address_id), @columns),
+               transdate   => $params{transdate} // DateTime->today_local,
                gldate      => DateTime->today_local,
                duedate     => $terms ? $terms->calc_date(reference_date => DateTime->today_local) : DateTime->today_local,
                invoice     => 1,
@@ -184,9 +188,16 @@ sub new_from {
 
   $args{payment_id} = ( $terms ? $terms->id : $source->payment_id);
 
-  if ($source->type =~ /_order$/) {
+  if ($source->type =~ /_delivery_order$/) {
+    $args{deliverydate} = $source->reqdate;
+    if (my $order = SL::DB::Manager::Order->find_by(ordnumber => $source->ordnumber)) {
+      $args{orddate}    = $order->transdate;
+    }
+
+  } elsif ($source->type =~ /_order$/) {
     $args{deliverydate} = $source->reqdate;
     $args{orddate}      = $source->transdate;
+
   } else {
     $args{quodate}      = $source->transdate;
   }
@@ -266,7 +277,7 @@ sub post {
 
     $self->_post_add_acctrans($data{amounts_cogs});
     $self->_post_add_acctrans($data{amounts});
-    $self->_post_add_acctrans($data{taxes});
+    $self->_post_add_acctrans($data{taxes_by_chart_id});
 
     $self->_post_add_acctrans({ $params{ar_id} => $self->amount * -1 });
 
@@ -296,14 +307,16 @@ sub _post_add_acctrans {
     $chart_link = SL::DB::Manager::Chart->find_by(id => $chart_id)->{'link'};
     $chart_link ||= '';
 
-    SL::DB::AccTransaction->new(trans_id   => $self->id,
-                                chart_id   => $chart_id,
-                                amount     => $spec->{amount},
-                                tax_id     => $spec->{tax_id},
-                                taxkey     => $spec->{taxkey},
-                                project_id => $self->globalproject_id,
-                                transdate  => $self->transdate,
-                                chart_link => $chart_link)->save;
+    if ($spec->{amount} != 0) {
+      SL::DB::AccTransaction->new(trans_id   => $self->id,
+                                  chart_id   => $chart_id,
+                                  amount     => $spec->{amount},
+                                  tax_id     => $spec->{tax_id},
+                                  taxkey     => $spec->{taxkey},
+                                  project_id => $self->globalproject_id,
+                                  transdate  => $self->transdate,
+                                  chart_link => $chart_link)->save;
+    }
   }
 }
 
@@ -348,13 +361,13 @@ sub add_ar_amount_row {
     ($netamount, $taxamount) = Form->calculate_tax($params{amount}, $tax->rate, $self->taxincluded, $roundplaces);
   };
   next unless $netamount; # netamount mustn't be zero
-
   my $sign = $self->customer_id ? 1 : -1;
   my $acc = SL::DB::AccTransaction->new(
     amount     => $netamount * $sign,
     chart_id   => $params{chart}->id,
     chart_link => $params{chart}->link,
     transdate  => $self->transdate,
+    gldate     => $self->gldate,
     taxkey     => $tax->taxkey,
     tax_id     => $tax->id,
     project_id => $params{project_id},
@@ -369,6 +382,7 @@ sub add_ar_amount_row {
        chart_id   => $tax->chart_id,
        chart_link => $tax->chart->link,
        transdate  => $self->transdate,
+       gldate     => $self->gldate,
        taxkey     => $tax->taxkey,
        tax_id     => $tax->id,
      );
@@ -412,7 +426,7 @@ sub create_ar_row {
   $self->add_transactions( $acc );
   push( @$acc_trans, $acc );
   return $acc_trans;
-};
+}
 
 sub validate_acc_trans {
   my ($self, %params) = @_;
@@ -525,7 +539,11 @@ sub invoice_type {
   my ($self) = @_;
 
   return 'ar_transaction'     if !$self->invoice;
-  return 'credit_note'        if $self->type eq 'credit_note' && $self->amount < 0 && !$self->storno;
+  return 'invoice_for_advance_payment_storno' if $self->type eq 'invoice_for_advance_payment' && $self->amount < 0 &&  $self->storno;
+  return 'invoice_for_advance_payment'        if $self->type eq 'invoice_for_advance_payment';
+  return 'final_invoice'                      if $self->type eq 'final_invoice';
+  # stornoed credit_notes are still credit notes and not invoices
+  return 'credit_note'        if $self->type eq 'credit_note' && $self->amount < 0;
   return 'invoice_storno'     if $self->type ne 'credit_note' && $self->amount < 0 &&  $self->storno;
   return 'credit_note_storno' if $self->type eq 'credit_note' && $self->amount > 0 &&  $self->storno;
   return 'invoice';
@@ -544,6 +562,9 @@ sub displayable_type {
   return t8('Credit Note')                            if $self->invoice_type eq 'credit_note';
   return t8('Invoice') . "(" . t8('Storno') . ")"     if $self->invoice_type eq 'invoice_storno';
   return t8('Credit Note') . "(" . t8('Storno') . ")" if $self->invoice_type eq 'credit_note_storno';
+  return t8('Invoice for Advance Payment')            if $self->invoice_type eq 'invoice_for_advance_payment';
+  return t8('Invoice for Advance Payment') . "(" . t8('Storno') . ")" if $self->invoice_type eq 'invoice_for_advance_payment_storno';
+  return t8('Final Invoice')                          if $self->invoice_type eq 'final_invoice';
   return t8('Invoice');
 }
 
@@ -558,6 +579,9 @@ sub abbreviation {
   return t8('Credit note (one letter abbreviation)') if $self->invoice_type eq 'credit_note';
   return t8('Invoice (one letter abbreviation)') . "(" . t8('Storno (one letter abbreviation)') . ")" if $self->invoice_type eq 'invoice_storno';
   return t8('Credit note (one letter abbreviation)') . "(" . t8('Storno (one letter abbreviation)') . ")"  if $self->invoice_type eq 'credit_note_storno';
+  return t8('Invoice for Advance Payment (one letter abbreviation)')  if $self->invoice_type eq 'invoice_for_advance_payment';
+  return t8('Invoice for Advance Payment with Storno (abbreviation)') if $self->invoice_type eq 'invoice_for_advance_payment_storno';
+  return t8('Final Invoice (one letter abbreviation)')                if $self->invoice_type eq 'final_invoice';
   return t8('Invoice (one letter abbreviation)');
 }
 
@@ -594,6 +618,12 @@ sub mark_as_paid {
   my ($self) = @_;
 
   $self->update_attributes(paid => $self->amount);
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
 }
 
 1;

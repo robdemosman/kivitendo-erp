@@ -40,6 +40,28 @@
    </td>
   </tr>
 
+  [%- IF ALL_PARTNER_EMAIL_ADDRESSES.size %]
+   [%- FOREACH email = ALL_PARTNER_EMAIL_ADDRESSES %]
+    <tr class="hidden" data-toggle-recipients="1">
+     <th align="right" nowrap>
+      [%- IF loop.first %]
+       [% LxERP.t8("Other recipients") %]
+      [%- END %]
+     </th>
+     <td>
+       [% P.checkbox_tag("email_form.additional_to[]", label=email, value=email, checked="0") %]
+     </td>
+    </tr>
+   [%- END %]
+  [%- END %]
+
+ [%- IF ALL_EMPLOYEES.size %]
+  <tr class="hidden" data-toggle-recipients="1">
+   <th align="right" nowrap>[% LxERP.t8("CC to Employee") %]</th>
+   <td>[% L.select_tag('email_form.cc_employee', ALL_EMPLOYEES, value_key='login' title_key='safe_name', with_empty=1, style=style) %]</td>
+  </tr>
+ [%- END %]
+
   <tr class="hidden" data-toggle-recipients="1">
    <th align="right" nowrap>[% LxERP.t8("Cc") %]</th>
    <td>[% L.input_tag("email_form.cc", email_form.cc, size="80") %]</td>
@@ -61,7 +83,7 @@
    <th align="right" nowrap>[% LxERP.t8("Message") %]
     <sup> [% L.link("generictranslations.pl?action=edit_email_strings", "1)", title=LxERP.t8('Tired of copying always nice phrases for this message? Click here to use the new preset message option!'), target="_blank") %]</sup>
   </th>
-   <td>[% L.textarea_tag("email_form.message", email_form.message, rows="15" cols="80" wrap="soft") %]</td>
+   <td>[% L.textarea_tag("email_form.message", email_form.message, rows="15", cols="80", class="texteditor texteditor-space-for-toolbar") %]</td>
   </tr>
 
 [% IF INSTANCE_CONF.get_doc_storage %]
@@ -70,8 +92,8 @@
    <td>
     [% SET no_file_label = have_files ? LxERP.t8("Don't include a printout of the record with the email, only selected files") : LxERP.t8("Don't include a printout of the record with the email") ;
            options       = [
+             [ "old_file", LxERP.t8("Send the last or create the first version for this record") ],
              [ "normal",   LxERP.t8("Create and send a new printout for this record") ],
-             [ "old_file", LxERP.t8("Send the last printout created for this record") ],
              [ "no_file",  no_file_label ],
            ] ;
        L.select_tag("email_form.attachment_policy", options, onchange="kivi.SalesPurchase.activate_send_email_actions_regarding_printout()") %]
@@ -103,6 +125,10 @@
              files = FILES.part_files
              checked = INSTANCE_CONF.get_email_attachment_part_files_checked
              label = LxERP.t8("Files from parts") %]
+
+  [% PROCESS attach_file_list
+             files = FILES.project_files
+             label = LxERP.t8("Files from projects") %]
 [% END %]
  </tbody>
 </table>
@@ -110,6 +136,6 @@
 <div id="email_form_print_options"></div>
 
 <p>
- [% L.button_tag(email_form.js_send_function, LxERP.t8("Send email")) %]
+ [% L.button_tag(email_form.js_send_function, LxERP.t8("Send email"), id='send_email') %]
  [% L.button_tag("\$('#send_email_dialog').dialog('close');", LxERP.t8("Abort")) %]
 </p>

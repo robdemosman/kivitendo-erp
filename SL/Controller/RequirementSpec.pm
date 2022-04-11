@@ -23,6 +23,7 @@ use SL::DB::RequirementSpec;
 use SL::Helper::CreatePDF qw();
 use SL::Helper::Flash;
 use SL::Locale::String;
+use SL::System::Process;
 use SL::Template::LaTeX;
 
 use Rose::Object::MakeMethods::Generic
@@ -86,6 +87,7 @@ sub action_ajax_edit {
   $self->js
     ->hide('#basic_settings')
     ->after('#basic_settings', $html)
+    ->reinit_widgets
     ->render;
 }
 
@@ -217,9 +219,16 @@ sub action_revert_to {
 sub action_create_pdf {
   my ($self, %params) = @_;
 
+  my $keep_temp_files = $::lx_office_conf{debug} && $::lx_office_conf{debug}->{keep_temp_files};
+  my $temp_dir        = File::Temp->newdir(
+    "kivitendo-print-XXXXXX",
+    DIR     => SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath},
+    CLEANUP => !$keep_temp_files,
+  );
+
   my $base_name       = $self->requirement_spec->type->template_file_name || 'requirement_spec';
-  my @pictures        = $self->prepare_pictures_for_printing;
-  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec);
+  my @pictures        = $self->prepare_pictures_for_printing($temp_dir->dirname);
+  my %result          = SL::Template::LaTeX->parse_and_create_pdf("${base_name}.tex", SELF => $self, rspec => $self->requirement_spec, userspath => $temp_dir->dirname);
 
   unlink @pictures unless ($::lx_office_conf{debug} || {})->{keep_temp_files};
 
@@ -325,7 +334,8 @@ sub setup {
 
   $::auth->assert('requirement_spec_edit');
   $::request->{layout}->use_stylesheet("${_}.css") for qw(jquery.contextMenu requirement_spec);
-  $::request->{layout}->use_javascript("${_}.js")  for qw(jquery.jstree jquery/jquery.contextMenu jquery/jquery.hotkeys requirement_spec ckeditor/ckeditor ckeditor/adapters/jquery kivi.Part kivi.CustomerVendor);
+  $::request->{layout}->use_javascript("${_}.js")  for qw(jquery.jstree jquery/jquery.contextMenu jquery/jquery.hotkeys requirement_spec ckeditor/ckeditor ckeditor/adapters/jquery kivi.Part kivi.CustomerVendor
+                                                          ckeditor/ckeditor ckeditor/adapters/jquery);
   $self->init_visible_section;
 
   return 1;
@@ -599,11 +609,11 @@ sub render_first_pasted_section_as_list {
 }
 
 sub prepare_pictures_for_printing {
-  my ($self) = @_;
+  my ($self, $userspath) = @_;
 
   my @files;
-  my $userspath = File::Spec->rel2abs($::lx_office_conf{paths}->{userspath});
-  my $target    =  "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
+  $userspath ||= SL::System::Process::exe_dir() . "/" . $::lx_office_conf{paths}->{userspath};
+  my $target   = "${userspath}/kivitendo-print-requirement-spec-picture-" . Common::unique_id() . '-';
 
   foreach my $picture (map { @{ $_->pictures } } @{ $self->requirement_spec->text_blocks }) {
     my $output_file_name        = $target . $picture->id . '.' . $picture->get_default_file_name_extension;

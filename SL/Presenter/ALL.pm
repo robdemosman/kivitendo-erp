@@ -5,7 +5,9 @@ use strict;
 use SL::Presenter::Chart;
 use SL::Presenter::CustomerVendor;
 use SL::Presenter::DeliveryOrder;
+use SL::Presenter::Dunning;
 use SL::Presenter::EscapedText;
+use SL::Presenter::FileObject;
 use SL::Presenter::Invoice;
 use SL::Presenter::GL;
 use SL::Presenter::Letter;
@@ -21,12 +23,15 @@ use SL::Presenter::ShopOrder;
 use SL::Presenter::Text;
 use SL::Presenter::Tag;
 use SL::Presenter::BankAccount;
+use SL::Presenter::MaterialComponents;
 
 our %presenters = (
   chart                       => 'SL::Presenter::Chart',
   customer_vendor             => 'SL::Presenter::CustomerVendor',
   delivery_order              => 'SL::Presenter::DeliveryOrder',
+  dunning                     => 'SL::Presenter::Dunning',
   escaped_text                => 'SL::Presenter::EscapedText',
+  file_object                 => 'SL::Presenter::FileObject',
   invoice                     => 'SL::Presenter::Invoice',
   gl                          => 'SL::Presenter::GL',
   letter                      => 'SL::Presenter::Letter',
@@ -42,6 +47,7 @@ our %presenters = (
   text                        => 'SL::Presenter::Text',
   tag                         => 'SL::Presenter::Tag',
   bank_account                => 'SL::Presenter::BankAccount',
+  M                           => 'SL::Presenter::MaterialComponents',
 );
 
 sub wrap {

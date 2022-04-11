@@ -35,7 +35,8 @@
 
 package IS;
 
-use List::Util qw(max);
+use List::Util qw(max sum0);
+use List::MoreUtils qw(any);
 
 use Carp;
 use SL::AM;
@@ -51,6 +52,7 @@ use SL::MoreCommon;
 use SL::IC;
 use SL::IO;
 use SL::TransNumber;
+use SL::DB::Chart;
 use SL::DB::Default;
 use SL::DB::Draft;
 use SL::DB::Tax;
@@ -171,11 +173,17 @@ sub invoice_details {
   push @arrays, map { "ic_cvar_$_->{name}" } @{ $ic_cvar_configs };
   push @arrays, map { "project_cvar_$_->{name}" } @{ $project_cvar_configs };
 
-  my @tax_arrays = qw(taxbase tax taxdescription taxrate taxnumber);
+  my @tax_arrays = qw(taxbase tax taxdescription taxrate taxnumber tax_id);
 
   my @payment_arrays = qw(payment paymentaccount paymentdate paymentsource paymentmemo);
 
-  map { $form->{TEMPLATE_ARRAYS}->{$_} = [] } (@arrays, @tax_arrays, @payment_arrays, @prepared_arrays);
+  my @invoices_for_advance_payment_arrays = qw(iap_invnumber iap_transdate
+                                               iap_amount iap_amount_nofmt
+                                               iap_taxamount iap_taxamount_nofmt
+                                               iap_open_amount iap_open_amount_nofmt
+                                               iap_netamount);
+
+  map { $form->{TEMPLATE_ARRAYS}->{$_} = [] } (@arrays, @tax_arrays, @payment_arrays, @prepared_arrays, @invoices_for_advance_payment_arrays);
 
   my $totalweight = 0;
   foreach $item (sort { $a->[1] cmp $b->[1] } @partsgroup) {
@@ -442,9 +450,9 @@ sub invoice_details {
         my $sortorder = "";
         if ($form->{groupitems}) {
           $sortorder =
-            qq|ORDER BY pg.partsgroup, a.oid|;
+            qq|ORDER BY pg.partsgroup, a.position|;
         } else {
-          $sortorder = qq|ORDER BY a.oid|;
+          $sortorder = qq|ORDER BY a.position|;
         }
 
         my $query =
@@ -505,28 +513,25 @@ sub invoice_details {
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate} },        $form->format_amount($myconfig, $form->{"${item}_rate"} * 100));
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxrate_nofmt} },  $form->{"${item}_rate"} * 100);
     push(@{ $form->{TEMPLATE_ARRAYS}->{taxnumber} },      $form->{"${item}_taxnumber"});
+    push(@{ $form->{TEMPLATE_ARRAYS}->{tax_id} },         $form->{"${item}_tax_id"});
 
-    # taxnumber is used for grouping the amount of the various taxes
+    # taxnumber (= accno) is used for grouping the amounts of the various taxes and as a prefix in form
 
-    # this code assumes that at most one tax entry can point to the same
+    # This code used to assume that at most one tax entry can point to the same
     # chart_id, even though chart_id does not have a unique constraint!
 
-    # this chart_id is then looked up via its accno, which is the key that is
+    # This chart_id was then looked up via its accno, which is the key that is
     # used to group the different taxes by for a record
 
-    # not every tax has a taxnumber (e.g. tax-free), but that is ok, because
-    # then there would be no tax amount to assign it to
+    # As we now also store the tax_id we can use that to look up the tax
+    # instead, this is only done here to get the (translated) taxdescription.
 
-    my $tax_objs = SL::DB::Manager::Tax->get_objects_from_sql(
-      sql  => 'SELECT * FROM tax WHERE chart_id = (SELECT id FROM chart WHERE accno = ?)',
-      args => [ $form->{"${item}_taxnumber"} ]
-    );
-    my $tax_obj;
-    if ( $tax_objs ) {
-      $tax_obj     = $tax_objs->[0];
+    if ( $form->{"${item}_tax_id"} ) {
+      my $tax_obj = SL::DB::Manager::Tax->find_by(id => $form->{"${item}_tax_id"}) or die "Can't find tax with id " . $form->{"${item}_tax_id"};
+      my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
+      push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
     }
-    my $description = $tax_obj ? $tax_obj->translated_attribute('taxdescription',  $form->{language_id}, 0) : '';
-    push(@{ $form->{TEMPLATE_ARRAYS}->{taxdescription} }, $description . q{ } . 100 * $form->{"${item}_rate"} . q{%});
+
   }
 
   for my $i (1 .. $form->{paidaccounts}) {
@@ -563,6 +568,11 @@ sub invoice_details {
     2
   );
 
+  $form->{rounding_nofmt} = $form->{rounding};
+  $form->{total_nofmt}    = $form->{total};
+  $form->{invtotal_nofmt} = $form->{invtotal};
+  $form->{paid_nofmt}     = $form->{paid};
+
   $form->{rounding} = $form->format_amount($myconfig, $form->{rounding}, 2);
   $form->{total}    = $form->format_amount($myconfig, $form->{invtotal} - $form->{paid}, 2);
   $form->{invtotal} = $form->format_amount($myconfig, $form->{invtotal}, 2);
@@ -576,6 +586,39 @@ sub invoice_details {
 
   $form->{username} = $myconfig->{name};
   $form->{$_} = $form->format_amount($myconfig, $form->{$_}, 2) for @separate_totals;
+
+  my $id_for_iap = $form->{convert_from_oe_ids} || $form->{convert_from_ar_ids} || $form->{id};
+  my $from_order = !!$form->{convert_from_oe_ids};
+  foreach my $invoice_for_advance_payment (@{$self->_get_invoices_for_advance_payment($id_for_iap, $from_order)}) {
+    # Collect VAT of invoices for advance payment.
+    # Set sellprices to fxsellprices for items, because
+    # the PriceTaxCalculator sets fxsellprice from sellprice before calculating.
+    $_->sellprice($_->fxsellprice) for @{$invoice_for_advance_payment->items};
+    my %pat       = $invoice_for_advance_payment->calculate_prices_and_taxes;
+    my $taxamount = sum0 values %{ $pat{taxes_by_tax_id} };
+
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_$_"} },                $invoice_for_advance_payment->$_) for qw(invnumber transdate);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_amount_nofmt"} },      $invoice_for_advance_payment->amount);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_amount"} },            $invoice_for_advance_payment->amount_as_number);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_netamount"} },         $invoice_for_advance_payment->netamount_as_number);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_taxamount_nofmt"} },   $taxamount);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_taxamount"} },         $form->format_amount($myconfig, $taxamount, 2));
+
+    my $open_amount = $form->round_amount($invoice_for_advance_payment->open_amount, 2);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_open_amount_nofmt"} }, $open_amount);
+    push(@{ $form->{TEMPLATE_ARRAYS}->{"iap_open_amount"} },       $form->format_amount($myconfig, $open_amount, 2));
+
+    $form->{iap_amount_nofmt}      += $invoice_for_advance_payment->amount;
+    $form->{iap_taxamount_nofmt}   += $taxamount;
+    $form->{iap_open_amount_nofmt} += $open_amount;
+    $form->{iap_existing}           = 1;
+  }
+  $form->{iap_amount}      = $form->format_amount($myconfig, $form->{iap_amount_nofmt},      2);
+  $form->{iap_taxamount}   = $form->format_amount($myconfig, $form->{iap_taxamount_nofmt},   2);
+  $form->{iap_open_amount} = $form->format_amount($myconfig, $form->{iap_open_amount_nofmt}, 2);
+
+  $form->{iap_final_amount_nofmt} = $form->{invtotal_nofmt} - $form->{iap_amount_nofmt};
+  $form->{iap_final_amount}       = $form->format_amount($myconfig, $form->{iap_final_amount_nofmt}, 2);
 
   $main::lxdebug->leave_sub();
 }
@@ -716,6 +759,8 @@ sub _post_invoice {
   my $defaultcurrency = $form->{defaultcurrency};
 
   my $all_units = AM->retrieve_units($myconfig, $form);
+
+  my $already_booked = !!$form->{id};
 
   if (!$payments_only) {
     if ($form->{storno}) {
@@ -1040,7 +1085,106 @@ SQL
 
   $project_id = conv_i($form->{"globalproject_id"});
   # entsprechend auch beim Bestimmen des Steuerschlüssels in Taxkey.pm berücksichtigen
-  my $taxdate = $form->{deliverydate} ? $form->{deliverydate} : $form->{invdate};
+  my $taxdate = $form->{tax_point} ||$form->{deliverydate} || $form->{invdate};
+
+  # Sanity checks for invoices for advance payment and final invoices
+  my $advance_payment_clearing_chart;
+  if (any { $_ eq $form->{type} } qw(invoice_for_advance_payment final_invoice)) {
+    $advance_payment_clearing_chart = SL::DB::Chart->new(id => $::instance_conf->get_advance_payment_clearing_chart_id)->load;
+    die "No Clearing Chart for Advance Payment" unless ref $advance_payment_clearing_chart eq 'SL::DB::Chart';
+
+    my @current_taxaccounts = (split(/ /, $form->{taxaccounts}));
+    die 'Wrong call: Cannot post invoice for advance payment or final invoice with more than one tax' if (scalar @current_taxaccounts > 1);
+
+    my @trans_ids = keys %{ $form->{amount} };
+    if (scalar @trans_ids > 1) {
+      require Data::Dumper;
+      die "Invalid state for advance payment more than one trans_id " . Dumper($form->{amount});
+    }
+  }
+
+  my $iap_amounts;
+  if ($form->{type} eq 'final_invoice') {
+    my $id_for_iap = $form->{convert_from_oe_ids} || $form->{convert_from_ar_ids} || $form->{id};
+    my $from_order = !!$form->{convert_from_oe_ids};
+    my $invoices_for_advance_payment = $self->_get_invoices_for_advance_payment($id_for_iap, $from_order);
+    if (scalar @$invoices_for_advance_payment > 0) {
+      # reverse booking for invoices for advance payment
+      foreach my $invoice_for_advance_payment (@$invoices_for_advance_payment) {
+        # delete ?
+        # --> is implemented below (bookings are marked in memo field)
+        #
+        # TODO: helper table acc_trans_advance_payment
+        # trans_id for final invoice connects to acc_trans_id here
+        # my $booking = SL::DB::AccTrans->new( ...)
+        # --> helper table not nessessary because of mark in memo field
+        #
+        # TODO: If final_invoice change (delete storno) delete all connectin acc_trans entries, if
+        # period is not closed
+        # --> no problem because gldate of reverse booking is date of final invoice
+        #     if deletion of final invoice is allowed, reverting bookings in invoices
+        #     for advance payment are allowed, too.
+        # $booking->id, $self->id in helper table
+        if (!$already_booked) {
+          # move all netamount to correct transfer chart (19% or 7%)
+          my %inv_calc = $invoice_for_advance_payment->calculate_prices_and_taxes();
+          my @trans_ids = keys %{ $inv_calc{amounts} };
+          die "Invalid state for advance payment invoice,more than one trans_id" if (scalar @trans_ids > 1);
+          my $entry = delete $inv_calc{amounts}{$trans_ids[0]};
+          my $tax;
+          if ($entry->{tax_id}) {
+            $tax = SL::DB::Manager::Tax->find_by(id => $entry->{tax_id}); # || die "Can't find tax with id " . $entry->{tax_id};
+          }
+          # no tax, no prob
+          if ($tax and $tax->rate != 0) {
+            my $transfer_chart = $tax->taxkey == 2 ? SL::DB::Chart->new(id => $::instance_conf->get_advance_payment_taxable_7_id)->load
+                              :  $tax->taxkey == 3 ? SL::DB::Chart->new(id => $::instance_conf->get_advance_payment_taxable_19_id)->load
+                              :  undef;
+            die "No Transfer Chart for Advance Payment" unless ref $transfer_chart eq 'SL::DB::Chart';
+            $form->{amount}->{$invoice_for_advance_payment->id}->{$transfer_chart->accno} = -1 * $invoice_for_advance_payment->netamount;
+            $form->{memo}  ->{$invoice_for_advance_payment->id}->{$transfer_chart->accno} = 'reverse booking by final invoice';
+            # AR
+            $form->{amount}->{$invoice_for_advance_payment->id}->{$form->{AR}} = $invoice_for_advance_payment->netamount;
+            $form->{memo}  ->{$invoice_for_advance_payment->id}->{$form->{AR}} = 'reverse booking by final invoice';
+          }
+        }
+
+        # VAT for invoices for advance payment is booked on payment of these. So do not book this VAT for final invoice.
+        # And book the amount of the invoices for advance payment with taxkey 0 (see below).
+        # Collect amounts and VAT of invoices for advance payment.
+
+        # Set sellprices to fxsellprices for items, because
+        # the PriceTaxCalculator sets fxsellprice from sellprice before calculating.
+        $_->sellprice($_->fxsellprice) for @{$invoice_for_advance_payment->items};
+        my %pat = $invoice_for_advance_payment->calculate_prices_and_taxes;
+
+        foreach my $tax_chart_id (keys %{ $pat{taxes_by_chart_id} }) {
+          my $tax_accno = SL::DB::Chart->load_cached($tax_chart_id)->accno;
+          $form->{amount}{ $form->{id} }{$tax_accno}  -= $pat{taxes_by_chart_id}->{$tax_chart_id};
+          $form->{amount}{ $form->{id} }{$form->{AR}} += $pat{taxes_by_chart_id}->{$tax_chart_id};
+        }
+
+        foreach my $amount_chart_id (keys %{ $pat{amounts} }) {
+          my $amount_accno = SL::DB::Chart->load_cached($amount_chart_id)->accno;
+          $iap_amounts->{$amount_accno}                 += $pat{amounts}->{$amount_chart_id}->{amount};
+          $form->{amount}{ $form->{id} }{$amount_accno} -= $pat{amounts}->{$amount_chart_id}->{amount};
+        }
+      }
+    }
+  }
+
+  if ($form->{type} eq 'invoice_for_advance_payment') {
+    # get gross and move to clearing chart - delete everything else
+    # 1. gross
+    my $gross = $form->{amount}{ $form->{id} }{$form->{AR}};
+    # 2. destroy
+    undef $form->{amount}{ $form->{id} };
+    # 3. rebuild
+    $form->{amount}{ $form->{id} }{$form->{AR}}            = $gross;
+    $form->{amount}{ $form->{id} }{$advance_payment_clearing_chart->accno} = $gross * -1;
+    # 4. no cogs, hopefully not commonly used at all
+    undef $form->{amount_cogs};
+  }
 
   foreach my $trans_id (keys %{ $form->{amount_cogs} }) {
     foreach my $accno (keys %{ $form->{amount_cogs}{$trans_id} }) {
@@ -1079,7 +1223,7 @@ SQL
 
       if (!$payments_only && ($form->{amount}{$trans_id}{$accno} != 0)) {
         $query =
-          qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link)
+          qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link, memo)
              VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?,
                      (SELECT tax_id
                       FROM taxkeys
@@ -1096,8 +1240,9 @@ SQL
                       AND startdate <= ?
                       ORDER BY startdate DESC LIMIT 1),
                      ?,
-                     (SELECT link FROM chart WHERE accno = ?))|;
-        @values = (conv_i($trans_id), $accno, $form->{amount}{$trans_id}{$accno}, conv_date($form->{invdate}), $accno, conv_date($taxdate), $accno, conv_date($taxdate), conv_i($project_id), $accno);
+                     (SELECT link FROM chart WHERE accno = ?),
+                     ?)|;
+        @values = (conv_i($trans_id), $accno, $form->{amount}{$trans_id}{$accno}, conv_date($form->{invdate}), $accno, conv_date($taxdate), $accno, conv_date($taxdate), conv_i($project_id), $accno, $form->{memo}{$trans_id}{$accno});
         do_query($form, $dbh, $query, @values);
         $form->{amount}{$trans_id}{$accno} = 0;
       }
@@ -1108,7 +1253,7 @@ SQL
 
       if (!$payments_only && ($form->{amount}{$trans_id}{$accno} != 0)) {
         $query =
-          qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link)
+          qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link, memo)
              VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?,
                      (SELECT tax_id
                       FROM taxkeys
@@ -1125,8 +1270,9 @@ SQL
                       AND startdate <= ?
                       ORDER BY startdate DESC LIMIT 1),
                      ?,
-                     (SELECT link FROM chart WHERE accno = ?))|;
-        @values = (conv_i($trans_id), $accno, $form->{amount}{$trans_id}{$accno}, conv_date($form->{invdate}), $accno, conv_date($taxdate), $accno, conv_date($taxdate), conv_i($project_id), $accno);
+                     (SELECT link FROM chart WHERE accno = ?),
+                     ?)|;
+        @values = (conv_i($trans_id), $accno, $form->{amount}{$trans_id}{$accno}, conv_date($form->{invdate}), $accno, conv_date($taxdate), $accno, conv_date($taxdate), conv_i($project_id), $accno,$form->{memo}{$trans_id}{$accno});
         do_query($form, $dbh, $query, @values);
       }
     }
@@ -1137,6 +1283,17 @@ SQL
       @values = (conv_i($trans_id), $rnd_accno, $rounding, conv_date($form->{invdate}), conv_i($project_id), $rnd_accno);
       do_query($form, $dbh, $query, @values);
       $rnd_accno = 0;
+    }
+  }
+
+  # Book the amount of the invoices for advance payment with taxkey 0 (see below).
+  if ($form->{type} eq 'final_invoice' && $iap_amounts) {
+    foreach my $accno (keys %$iap_amounts) {
+      $query =
+        qq|INSERT INTO acc_trans (trans_id, chart_id, amount, transdate, tax_id, taxkey, project_id, chart_link)
+        VALUES (?, (SELECT id FROM chart WHERE accno = ?), ?, ?, (SELECT id FROM tax WHERE taxkey=0), 0, ?, (SELECT link FROM chart WHERE accno = ?))|;
+      @values = (conv_i($form->{id}), $accno, $iap_amounts->{$accno}, conv_date($form->{invdate}), conv_i($project_id), $accno);
+      do_query($form, $dbh, $query, @values);
     }
   }
 
@@ -1315,32 +1472,32 @@ SQL
 
   $query = qq|UPDATE ar set
                 invnumber   = ?, ordnumber     = ?, quonumber     = ?, cusordnumber  = ?,
-                transdate   = ?, orddate       = ?, quodate       = ?, customer_id   = ?,
+                transdate   = ?, orddate       = ?, quodate       = ?, tax_point     = ?, customer_id   = ?,
                 amount      = ?, netamount     = ?, paid          = ?,
                 duedate     = ?, deliverydate  = ?, invoice       = ?, shippingpoint = ?,
                 shipvia     = ?,                    notes         = ?, intnotes      = ?,
                 currency_id = (SELECT id FROM currencies WHERE name = ?),
                 department_id = ?, payment_id    = ?, taxincluded   = ?,
-                type        = ?, language_id   = ?, taxzone_id    = ?, shipto_id     = ?,
+                type        = ?, language_id   = ?, taxzone_id    = ?, shipto_id     = ?, billing_address_id = ?,
                 employee_id = ?, salesman_id   = ?, storno_id     = ?, storno        = ?,
                 cp_id       = ?, marge_total   = ?, marge_percent = ?,
                 globalproject_id               = ?, delivery_customer_id             = ?,
                 transaction_description        = ?, delivery_vendor_id               = ?,
-                donumber    = ?, invnumber_for_credit_note = ?,        direct_debit  = ?,
+                donumber    = ?, invnumber_for_credit_note = ?,        direct_debit  = ?, qrbill_without_amount = ?,
                 delivery_term_id = ?
               WHERE id = ?|;
   @values = (          $form->{"invnumber"},           $form->{"ordnumber"},             $form->{"quonumber"},          $form->{"cusordnumber"},
-             conv_date($form->{"invdate"}),  conv_date($form->{"orddate"}),    conv_date($form->{"quodate"}),    conv_i($form->{"customer_id"}),
+             conv_date($form->{"invdate"}),  conv_date($form->{"orddate"}),    conv_date($form->{"quodate"}), conv_date($form->{tax_point}), conv_i($form->{"customer_id"}),
                        $amount,                        $netamount,                       $form->{"paid"},
              conv_date($form->{"duedate"}),  conv_date($form->{"deliverydate"}),    '1',                                $form->{"shippingpoint"},
                        $form->{"shipvia"},                                $restricter->process($form->{"notes"}),       $form->{"intnotes"},
                        $form->{"currency"},     conv_i($form->{"department_id"}), conv_i($form->{"payment_id"}),        $form->{"taxincluded"} ? 't' : 'f',
-                       $form->{"type"},         conv_i($form->{"language_id"}),   conv_i($form->{"taxzone_id"}), conv_i($form->{"shipto_id"}),
+                       $form->{"type"},         conv_i($form->{"language_id"}),   conv_i($form->{"taxzone_id"}), conv_i($form->{"shipto_id"}), conv_i($form->{billing_address_id}),
                 conv_i($form->{"employee_id"}), conv_i($form->{"salesman_id"}),   conv_i($form->{storno_id}),           $form->{"storno"} ? 't' : 'f',
                 conv_i($form->{"cp_id"}),            1 * $form->{marge_total} ,      1 * $form->{marge_percent},
                 conv_i($form->{"globalproject_id"}),                              conv_i($form->{"delivery_customer_id"}),
                        $form->{transaction_description},                          conv_i($form->{"delivery_vendor_id"}),
-                       $form->{"donumber"}, $form->{"invnumber_for_credit_note"},        $form->{direct_debit} ? 't' : 'f',
+                       $form->{"donumber"}, $form->{"invnumber_for_credit_note"},        $form->{direct_debit} ? 't' : 'f', $form->{qrbill_without_amount} ? 't' : 'f',
                 conv_i($form->{delivery_term_id}),
                 conv_i($form->{"id"}));
   do_query($form, $dbh, $query, @values);
@@ -1444,8 +1601,67 @@ SQL
     }
   }
 
+  # update shop status
+  my $invoice = SL::DB::Invoice->new( id => $form->{id} )->load;
+  my @linked_shop_orders = $invoice->linked_records(
+    from      => 'ShopOrder',
+    via       => ['DeliveryOrder','Order',],
+  );
+    #do update
+    my $shop_order = $linked_shop_orders[0][0];
+  if ( $shop_order ) {
+    require SL::Shop;
+    my $shop_config = SL::DB::Manager::Shop->get_first( query => [ id => $shop_order->shop_id ] );
+    my $shop = SL::Shop->new( config => $shop_config );
+    $shop->connector->set_orderstatus($shop_order->shop_trans_id, "completed");
+  }
+
   return 1;
 }
+
+sub _get_invoices_for_advance_payment {
+  my ($self, $id, $id_is_from_order) = @_;
+
+  return [] if !$id;
+
+  # Search all related invoices for advance payment.
+  # Case 1:
+  # (order) -> invoice for adv. payment 1 -> invoice for adv. payment 2 -> invoice for adv. payment 3 -> final invoice
+  #
+  # Case 2:
+  # order -> invoice for adv. payment 1
+  #   | |`-> invoice for adv. payment 2
+  #   | `--> invoice for adv. payment 3
+  #   `----> final invoice
+  #
+  # The id is currently that from the last invoice for adv. payment (3 in this example),
+  # that from the final invoice or that from the order.
+
+  my $invoice_obj;
+  my $order_obj;
+  my $links;
+
+  if (!$id_is_from_order) {
+    $invoice_obj = SL::DB::Invoice->load_cached($id*1);
+    $links       = $invoice_obj->linked_records(direction => 'from', from => ['Order']);
+    $order_obj   = $links->[0];
+  } else {
+    $order_obj   = SL::DB::Order->load_cached($id*1);
+  }
+
+  if ($order_obj) {
+    $links        = $order_obj  ->linked_records(direction => 'to',   to => ['Invoice']);
+  } else {
+    $links        = $invoice_obj->linked_records(direction => 'from', from => ['Invoice'], recursive => 1);
+  }
+
+  my @related_invoices = grep {'SL::DB::Invoice' eq ref $_ && "invoice_for_advance_payment" eq $_->type} @$links;
+
+  push @related_invoices, $invoice_obj if !$order_obj && "invoice_for_advance_payment" eq $invoice_obj->type;
+
+  return \@related_invoices;
+}
+
 
 sub transfer_out {
   $::lxdebug->enter_sub;
@@ -1454,7 +1670,7 @@ sub transfer_out {
 
   my (@errors, @transfers);
 
-  # do nothing, if transfer default is not requeseted at all
+  # do nothing, if transfer default is not requested at all
   if (!$::instance_conf->get_transfer_default) {
     $::lxdebug->leave_sub;
     return \@errors;
@@ -1464,26 +1680,56 @@ sub transfer_out {
 
   foreach my $i (1 .. $form->{rowcount}) {
     next if !$form->{"id_$i"};
-    my ($err, $wh_id, $bin_id) = _determine_wh_and_bin($dbh, $::instance_conf,
-                                                       $form->{"id_$i"},
-                                                       $form->{"qty_$i"},
-                                                       $form->{"unit_$i"});
-    if (!@{ $err } && $wh_id && $bin_id) {
-      push @transfers, {
-        'parts_id'         => $form->{"id_$i"},
-        'qty'              => $form->{"qty_$i"},
-        'unit'             => $form->{"unit_$i"},
-        'transfer_type'    => 'shipped',
-        'src_warehouse_id' => $wh_id,
-        'src_bin_id'       => $bin_id,
-        'project_id'       => $form->{"project_id_$i"},
-        'invoice_id'       => $form->{"invoice_id_$i"},
-        'comment'          => $::locale->text("Default transfer invoice"),
-      };
-    }
 
+    my ($err, $qty, $wh_id, $bin_id, $chargenumber);
+
+    if ($::instance_conf->get_sales_serial_eq_charge && $form->{"serialnumber_$i"}) {
+      my @serials = split(" ", $form->{"serialnumber_$i"});
+      if (scalar @serials != $form->{"qty_$i"}) {
+        push @errors, $::locale->text("Cannot transfer #1 qty with #2 serial number(s)", $form->{"qty_$i"}, scalar @serials);
+        last;
+      }
+      foreach my $serial (@serials) {
+        ($qty, $wh_id, $bin_id, $chargenumber) = WH->get_wh_and_bin_for_charge(chargenumber => $serial);
+        if (!$qty) {
+          push @errors, $::locale->text("Not enough in stock for the serial number #1", $serial);
+          last;
+        }
+        push @transfers, {
+            'parts_id'         => $form->{"id_$i"},
+            'qty'              => 1,
+            'unit'             => $form->{"unit_$i"},
+            'transfer_type'    => 'shipped',
+            'src_warehouse_id' => $wh_id,
+            'src_bin_id'       => $bin_id,
+            'chargenumber'     => $chargenumber,
+            'project_id'       => $form->{"project_id_$i"},
+            'invoice_id'       => $form->{"invoice_id_$i"},
+            'comment'          => $::locale->text("Default transfer invoice with charge number"),
+        };
+      }
+      $err = []; # error handling uses @errors direct
+    } else {
+      ($err, $wh_id, $bin_id)    = _determine_wh_and_bin($dbh, $::instance_conf,
+                                                         $form->{"id_$i"},
+                                                         $form->{"qty_$i"},
+                                                         $form->{"unit_$i"});
+      if (!@{ $err } && $wh_id && $bin_id) {
+        push @transfers, {
+          'parts_id'         => $form->{"id_$i"},
+          'qty'              => $form->{"qty_$i"},
+          'unit'             => $form->{"unit_$i"},
+          'transfer_type'    => 'shipped',
+          'src_warehouse_id' => $wh_id,
+          'src_bin_id'       => $bin_id,
+          'project_id'       => $form->{"project_id_$i"},
+          'invoice_id'       => $form->{"invoice_id_$i"},
+          'comment'          => $::locale->text("Default transfer invoice"),
+        };
+      }
+    }
     push @errors, @{ $err };
-  }
+  } # end form rowcount
 
   if (!@errors) {
     WH->transfer(@transfers);
@@ -1923,6 +2169,18 @@ sub _delete_invoice {
     do_query($form, $dbh, qq|UPDATE ar SET storno = 'f', paid = 0 WHERE id = ?|, $invoice_id);
   }
 
+  # if we delete a final invoice, the reverse bookings for the clearing account in the invoice for advance payment
+  # must be deleted as well
+  my $invoices_for_advance_payment = $self->_get_invoices_for_advance_payment($form->{id});
+
+  # Todo: allow only if invoice for advance payment is not paid.
+  # die if any { $_->paid } for @$invoices_for_advance_payment;
+  my @trans_ids_to_consider        = map { $_->id } @$invoices_for_advance_payment;
+  if (scalar @trans_ids_to_consider) {
+    my $query = sprintf 'DELETE FROM acc_trans WHERE memo LIKE ? AND trans_id IN (%s)', join ', ', ("?") x scalar @trans_ids_to_consider;
+    do_query($form, $dbh, $query, 'reverse booking by final invoice', @trans_ids_to_consider);
+  }
+
   # delete spool files
   my @spoolfiles = selectall_array_query($form, $dbh, qq|SELECT spoolfile FROM status WHERE trans_id = ?|, @values);
 
@@ -1985,14 +2243,15 @@ sub _retrieve_invoice {
       qq|SELECT
            a.invnumber, a.ordnumber, a.quonumber, a.cusordnumber,
            a.orddate, a.quodate, a.globalproject_id,
-           a.transdate AS invdate, a.deliverydate, a.paid, a.storno, a.storno_id, a.gldate,
+           a.transdate AS invdate, a.deliverydate, a.tax_point, a.paid, a.storno, a.storno_id, a.gldate,
            a.shippingpoint, a.shipvia, a.notes, a.intnotes, a.taxzone_id,
            a.duedate, a.taxincluded, (SELECT cu.name FROM currencies cu WHERE cu.id=a.currency_id) AS currency, a.shipto_id, a.cp_id,
+           a.billing_address_id,
            a.employee_id, a.salesman_id, a.payment_id,
            a.mtime, a.itime,
            a.language_id, a.delivery_customer_id, a.delivery_vendor_id, a.type,
            a.transaction_description, a.donumber, a.invnumber_for_credit_note,
-           a.marge_total, a.marge_percent, a.direct_debit, a.delivery_term_id,
+           a.marge_total, a.marge_percent, a.direct_debit, a.qrbill_without_amount, a.delivery_term_id,
            dc.dunning_description,
            e.name AS employee
          FROM ar a
@@ -2028,7 +2287,8 @@ sub _retrieve_invoice {
     $sth->finish;
     map { $form->{$_} =~ s/ +$//g } qw(printed emailed queued);
 
-    my $transdate = $form->{deliverydate} ? $dbh->quote($form->{deliverydate})
+    my $transdate = $form->{tax_point}    ? $dbh->quote($form->{tax_point})
+                  : $form->{deliverydate} ? $dbh->quote($form->{deliverydate})
                   : $form->{invdate}      ? $dbh->quote($form->{invdate})
                   :                         "current_date";
 
@@ -2087,7 +2347,7 @@ sub _retrieve_invoice {
       # get tax rates and description
       my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
       $query =
-        qq|SELECT c.accno, t.taxdescription, t.rate, c.accno as taxnumber
+        qq|SELECT c.accno, t.taxdescription, t.rate, t.id as tax_id, c.accno as taxnumber
            FROM tax t
            LEFT JOIN chart c ON (c.id = t.chart_id)
            WHERE t.id IN
@@ -2110,7 +2370,8 @@ sub _retrieve_invoice {
         if (!($form->{taxaccounts} =~ /\Q$ptr->{accno}\E/)) {
           $form->{"$ptr->{accno}_rate"}        = $ptr->{rate};
           $form->{"$ptr->{accno}_description"} = $ptr->{taxdescription};
-          $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber};
+          $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber}; # don't use this anymore
+          $form->{"$ptr->{accno}_tax_id"}      = $ptr->{tax_id};
           $form->{taxaccounts} .= "$ptr->{accno} ";
         }
 
@@ -2174,6 +2435,10 @@ sub get_customer {
          c.street, c.zipcode, c.city, c.country,
          c.notes AS intnotes, c.pricegroup_id as customer_pricegroup_id, c.taxzone_id, c.salesman_id, cu.name AS curr,
          c.taxincluded_checked, c.direct_debit,
+         (SELECT aba.id
+          FROM additional_billing_addresses aba
+          WHERE aba.default_address
+          LIMIT 1) AS default_billing_address_id,
          b.discount AS tradediscount, b.description AS business
        FROM customer c
        LEFT JOIN business b ON (b.id = c.business_id)
@@ -2412,7 +2677,7 @@ sub retrieve_item {
     # get tax rates and description
     my $accno_id = ($form->{vc} eq "customer") ? $ref->{income_accno} : $ref->{expense_accno};
     $query =
-      qq|SELECT c.accno, t.taxdescription, t.rate, c.accno as taxnumber
+      qq|SELECT c.accno, t.taxdescription, t.id as tax_id, t.rate, c.accno as taxnumber
          FROM tax t
          LEFT JOIN chart c ON (c.id = t.chart_id)
          WHERE t.id in
@@ -2441,6 +2706,7 @@ sub retrieve_item {
         $form->{"$ptr->{accno}_rate"}        = $ptr->{rate};
         $form->{"$ptr->{accno}_description"} = $ptr->{taxdescription};
         $form->{"$ptr->{accno}_taxnumber"}   = $ptr->{taxnumber};
+        $form->{"$ptr->{accno}_tax_id"}      = $ptr->{tax_id};
         $form->{taxaccounts} .= "$ptr->{accno} ";
       }
 

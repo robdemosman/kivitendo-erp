@@ -272,10 +272,6 @@ sub all_parts {
     insertdate         => 'itime::DATE',
   );
 
-  if ($form->{l_assembly} && $form->{l_lastcost}) {
-    @simple_l_switches = grep { $_ ne 'lastcost' } @simple_l_switches;
-  }
-
   my $make_token_builder = sub {
     my $joins_needed = shift;
     sub {
@@ -402,7 +398,7 @@ sub all_parts {
         FROM assembly a_lc
         LEFT JOIN parts p_lc            ON (a_lc.parts_id        = p_lc.id)
         LEFT JOIN price_factors pfac_lc ON (p_lc.price_factor_id = pfac_lc.id)
-        WHERE (a_lc.id = p.id)) AS lastcost|;
+        WHERE (a_lc.id = p.id)) AS assembly_lastcost|;
   $table_prefix{$q_assembly_lastcost} = ' ';
 
   # special case makemodel search
@@ -485,7 +481,7 @@ sub all_parts {
 
   my $token_builder = $make_token_builder->(\%joins_needed);
 
-  my @sort_cols    = (@simple_filters, qw(id priceupdate onhand invnumber ordnumber quonumber name serialnumber soldtotal deliverydate insertdate shop));
+  my @sort_cols    = (@simple_filters, qw(id onhand invnumber ordnumber quonumber name serialnumber soldtotal deliverydate insertdate shop));
      $form->{sort} = 'id' unless grep { $form->{"l_$_"} } grep { $form->{sort} eq $_ } @sort_cols; # sort by id if unknown or invisible column
   my $sort_order   = ($form->{revers} ? ' DESC' : ' ASC');
   my $order_clause = " ORDER BY " . $token_builder->($form->{sort}) . ($form->{revers} ? ' DESC' : ' ASC');
@@ -526,6 +522,24 @@ sub all_parts {
     push @bind_vars, @cvar_values;
   }
 
+  # simple search for assemblies by items used in assemblies
+  if ($form->{bom} eq '2' && $form->{l_assembly}) {
+    # assembly_qty is the column name
+    $form->{l_assembly_qty} = 1;
+    # nuke where clause and bind vars
+    $where_clause = ' 1=1 AND p.id in (SELECT id from assembly where parts_id IN ' .
+                    ' (select id from parts where 1=1';
+    @bind_vars    = ();
+    # use only like filter for items used in assemblies
+    foreach (@like_filters) {
+      next unless $form->{$_};
+      $form->{"l_$_"} = '1'; # show the column
+      $where_clause .= " AND $_ ILIKE ? ";
+      push @bind_vars,    like($form->{$_});
+    }
+    $where_clause .='))';
+  }
+
   my $query = <<"  SQL";
     SELECT DISTINCT $select_clause
     FROM parts p
@@ -535,7 +549,6 @@ sub all_parts {
     $order_clause
     $limit_clause
   SQL
-
   $form->{parts} = selectall_hashref_query($form, $dbh, $query, @bind_vars);
 
   map { $_->{onhand} *= 1 } @{ $form->{parts} };
@@ -552,10 +565,10 @@ sub all_parts {
   my @assemblies;
   if ($form->{l_assembly} && $form->{bom}) {
     $query =
-      qq|SELECT p.id, p.partnumber, p.description, a.qty AS onhand,
+      qq|SELECT p.id, p.partnumber, p.description, a.qty AS assembly_qty,
            p.unit, p.notes, p.itime::DATE as insertdate,
            p.sellprice, p.listprice, p.lastcost,
-           p.rop, p.weight, p.priceupdate,
+           p.rop, p.weight,
            p.image, p.drawing, p.microfiche,
            pfac.factor
          FROM parts p
@@ -723,37 +736,14 @@ sub retrieve_accounts {
 
   # transdate madness.
   my $transdate = "";
-  if ($form->{type} eq "invoice" or $form->{type} eq "credit_note") {
+  if ( (any {$form->{type} eq $_} qw(invoice credit_note invoice_for_advance_payment final_invoice)) or ($form->{script} eq 'ir.pl') ) {
     # use deliverydate for sales and purchase invoice, if it exists
     # also use deliverydate for credit notes
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif ($form->{script} eq 'ir.pl') {
-    # when a purchase invoice is opened from the report of purchase invoices
-    # $form->{type} isn't set, but $form->{script} is, not sure why this is or
-    # whether this distinction matters in some other scenario. Otherwise one
-    # could probably take out this elsif and add a
-    # " or $form->{script} eq 'ir.pl' "
-    # to the above if-statement
-    if (!$form->{deliverydate}) {
-      $transdate = $form->{invdate};
-    } else {
-      $transdate = $form->{deliverydate};
-    }
-  } elsif (($form->{type} eq "credit_note") and $form->{deliverydate}) {
-    # if credit_note has a deliverydate, use this instead of invdate
-    # useful for credit_notes of invoices from an old period with different tax
-    # if there is no deliverydate then invdate is used, old default (see next elsif)
-    # Falls hier der Stichtag für Steuern anders bestimmt wird,
-    # entsprechend auch bei Taxkeys.pm anpassen
-    $transdate = $form->{deliverydate};
-  } elsif (($form->{type} eq "credit_note") || ($form->{script} eq 'ir.pl')) {
-    $transdate = $form->{invdate};
+    $transdate = $form->{tax_point} || $form->{deliverydate} || $form->{invdate};
   } else {
-    $transdate = $form->{transdate};
+    my $deliverydate;
+    $deliverydate = $form->{reqdate} if any { $_ eq $form->{type} } qw(sales_order request_quotation purchase_order);
+    $transdate = $form->{tax_point} || $deliverydate || $form->{transdate};
   }
 
   if ($transdate eq "") {
@@ -790,7 +780,7 @@ sub retrieve_accounts {
 SQL
 
   my $query_tax = <<SQL;
-    SELECT c.accno, t.taxdescription AS description, t.rate,
+    SELECT c.accno, t.taxdescription AS description, t.id as tax_id, t.rate,
            c.accno as taxnumber
     FROM tax t
     LEFT JOIN chart c ON c.id = t.chart_id
@@ -822,7 +812,7 @@ SQL
     $form->{"taxaccounts_$index"} = $ref->{"accno"};
     $form->{"taxaccounts"} .= "$ref->{accno} "if $form->{"taxaccounts"} !~ /$ref->{accno}/;
 
-    $form->{"$ref->{accno}_${_}"} = $ref->{$_} for qw(rate description taxnumber);
+    $form->{"$ref->{accno}_${_}"} = $ref->{$_} for qw(rate description taxnumber tax_id);
   }
 
   $sth_tax->finish;

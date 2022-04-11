@@ -98,6 +98,7 @@ use strict;
 # $locale->text('Payments')
 # $locale->text('Project Transactions')
 # $locale->text('Business evaluation')
+# $locale->text('Final Invoice, please use mark as paid manually')
 
 # $form->parse_html_template('rp/html_report_susa')
 
@@ -630,7 +631,7 @@ sub generate_trial_balance {
   my $attachment_basename = $locale->text('trial_balance');
   my $report              = SL::ReportGenerator->new(\%myconfig, $form);
 
-  my @hidden_variables    = qw(fromdate todate year method department_id);
+  my @hidden_variables    = qw(fromdate todate year method department_id all_accounts);
 
   my $href                = build_std_url('action=generate_trial_balance', grep { $form->{$_} } @hidden_variables);
 
@@ -1006,8 +1007,7 @@ sub aging {
 
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
-  my @columns = qw(statement ct invnumber transdate duedate amount open);
-
+  my @columns = qw(statement ct invnumber transdate duedate amount open datepaid current_open type);
   my %column_defs = (
     'statement' => { raw_header_data => SL::Presenter::Tag::checkbox_tag("checkall", checkall => '[name^=statement_]'), 'visible' => $form->{ct} eq 'customer' ? 'HTML' : 0, align => "center" },
     'ct'        => { 'text' => $form->{ct} eq 'customer' ? $locale->text('Customer') : $locale->text('Vendor'), },
@@ -1016,10 +1016,13 @@ sub aging {
     'duedate'   => { 'text' => $locale->text('Due'), },
     'amount'    => { 'text' => $locale->text('Amount'), },
     'open'      => { 'text' => $locale->text('Open'), },
+    'datepaid'  => { 'text' => $locale->text('Date of Last Payment'), visible => ($form->{reporttype} eq 'custom') },
+    'current_open' => { 'text' => $locale->text('Open Amount at Last Payment Date'), visible => ($form->{reporttype} eq 'custom') },
+    'type'      => { 'text' => $locale->text('Note'), },
   );
 
   my %column_alignment = ('statement' => 'center',
-                          map { $_ => 'right' } qw(open amount));
+                          map { $_ => 'right' } qw(open amount current_open datepaid));
 
   $report->set_options('std_column_visibility' => 1);
   $report->set_columns(%column_defs);
@@ -1048,10 +1051,20 @@ sub aging {
     $form->{title} = sprintf($locale->text('Ap aging on %s'), $form->{todate});
   }
 
-  if ($form->{fromdate}) {
-    push @options, $locale->text('for Period') . " " . $locale->text('From') . " " .$locale->date(\%myconfig, $form->{fromdate}, 1) . " " . $locale->text('Bis') . " " . $locale->date(\%myconfig, $form->{todate}, 1);
+  $form->{callback} .= "&reporttype=" . E($form->{reporttype});
+  if ($form->{reporttype} eq 'free') {
+    if ($form->{fromdate}) {
+      push @options, $locale->text('for Period') . " " . $locale->text('From') . " " .
+      $locale->date(\%myconfig, $form->{fromdate}, 1) . " "                          .
+      $locale->text('Bis') . " " . $locale->date(\%myconfig, $form->{todate}, 1);
+    } else {
+      push @options, $locale->text('for Period') . " " . $locale->text('Bis') . " " .
+      $locale->date(\%myconfig, $form->{todate}, 1);
+    }
+  } elsif ($form->{reporttype} eq 'custom') {
+    push @options, $locale->text('Reference day') . " " . $locale->date(\%myconfig, $form->{fordate}, 1);
   } else {
-    push @options, $locale->text('for Period') . " " . $locale->text('Bis') . " " . $locale->date(\%myconfig, $form->{todate}, 1);
+    die "Unknown reporttype for aging";
   }
 
   $attachment_basename = $form->{ct} eq 'customer' ? $locale->text('ar_aging_list') : $locale->text('ap_aging_list');
@@ -1066,7 +1079,7 @@ sub aging {
 
   my $previous_ctid = 0;
   my $row_idx       = 0;
-  my @periods       = qw(open amount);
+  my @periods       = qw(open amount current_open);
   my %subtotals     = map { $_ => 0 } @periods;
   my %totals        = map { $_ => 0 } @periods;
 
@@ -1092,6 +1105,12 @@ sub aging {
     }
 
     $row->{invnumber}->{link} =  build_std_url("script=$ref->{module}.pl", 'action=edit', 'callback', 'id=' . E($ref->{id}));
+    if ($row->{type}->{data} eq 'final_invoice') {
+      $row->{type}->{data} = $locale->text('Final Invoice, please use mark as paid manually');
+      $row->{type}->{link} = build_std_url("script=$ref->{module}.pl", 'action=edit', 'callback', 'id=' . E($ref->{id}));
+    } else {
+      $row->{type}->{data} = '';
+    }
 
     if ($previous_ctid != $ref->{ctid}) {
       $row->{statement}->{raw_data} =
@@ -1139,13 +1158,11 @@ sub send_email {
 
   RP->aging(\%myconfig, \%$form);
 
-  $form->{"statement_1"} = 1;
 
   my $email_form  = delete $form->{email_form};
   my %field_names = (to => 'email');
 
   $form->{ $field_names{$_} // $_ } = $email_form->{$_} for keys %{ $email_form };
-
   $form->{media} = 'email';
   print_form();
 

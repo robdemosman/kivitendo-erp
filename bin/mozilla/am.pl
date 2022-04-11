@@ -659,23 +659,25 @@ sub config {
   $form->{enabled_quick_searchmodules} = \@{$enabled_quick_search};
   $form->{default_quick_searchmodules} = \@quick_search_modules;
 
-  $form->{displayable_name_specs_by_module} = AM->displayable_name_specs_by_module();
-  $form->{positions_scrollbar_height}       = AM->positions_scrollbar_height();
-  $form->{purchase_search_makemodel}        = AM->purchase_search_makemodel();
-  $form->{sales_search_customer_partnumber} = AM->sales_search_customer_partnumber();
-  $form->{positions_show_update_button}     = AM->positions_show_update_button();
+  $form->{displayable_name_specs_by_module}       = AM->displayable_name_specs_by_module();
+  $form->{positions_scrollbar_height}             = AM->positions_scrollbar_height();
+  $form->{purchase_search_makemodel}              = AM->purchase_search_makemodel();
+  $form->{sales_search_customer_partnumber}       = AM->sales_search_customer_partnumber();
+  $form->{positions_show_update_button}           = AM->positions_show_update_button();
+  $form->{time_recording_use_duration}            = AM->time_recording_use_duration();
+  $form->{longdescription_dialog_size_percentage} = AM->longdescription_dialog_size_percentage();
 
   $myconfig{show_form_details} = 1 unless (defined($myconfig{show_form_details}));
   $form->{CAN_CHANGE_PASSWORD} = $main::auth->can_change_password();
   $form->{todo_cfg}            = { TODO->get_user_config('login' => $::myconfig{login}) };
-
-  $::request->{layout}->use_javascript("jquery.multiselect2side.js");
   $form->{title}               = $locale->text('Edit Preferences for #1', $::myconfig{login});
+
+  $::request->{layout}->use_javascript("${_}.js") for qw(jquery.multiselect2side ckeditor/ckeditor ckeditor/adapters/jquery);
 
   setup_am_config_action_bar();
   $form->header();
 
-  $form->{full_signature} = $form->create_email_signature();
+  $form->{company_signature} = SL::DB::Default->get->signature;
 
   print $form->parse_html_template('am/config');
 
@@ -1225,7 +1227,9 @@ sub save_tax {
   $form->{translations} = { map { $_ =~ '^translation_(\d+)'; $1 => $form->{$_} } @translation_keys };
 
   AM->save_tax(\%myconfig, \%$form);
-  $form->redirect($locale->text('Tax saved!'));
+  flash_later('info', $locale->text("Tax saved!"));
+
+  print $form->redirect_header('am.pl?action=list_tax');
 
   $main::lxdebug->leave_sub();
 }
@@ -1335,6 +1339,7 @@ sub save_warehouse {
   $main::auth->assert('config');
 
   $form->isblank("description", $locale->text('Description missing!'));
+  $form->isblank("number_of_new_bins", $locale->text('Number')  . $locale->text(' missing!'));
 
   $form->{number_of_new_bins} = $form->parse_amount(\%myconfig, $form->{number_of_new_bins});
 

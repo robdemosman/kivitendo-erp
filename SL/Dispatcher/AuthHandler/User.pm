@@ -26,7 +26,9 @@ sub handle {
   return $self->_error(%param) unless $::myconfig{login};
 
   $::locale = Locale->new($::myconfig{countrycode});
-  $::request->{layout} = SL::Layout::Dispatcher->new(style => $::myconfig{menustyle});
+  $::request->{layout} = $::request->is_mobile
+    ? SL::Layout::Dispatcher->new(style => 'mobile')
+    : SL::Layout::Dispatcher->new(style => $::myconfig{menustyle});
 
   my $ok   =  $::auth->is_api_token_cookie_valid;
   $ok    ||=  $::form->{'{AUTH}login'}                      && (SL::Auth::OK() == $::auth->authenticate($::myconfig{login}, $::form->{'{AUTH}password'}));
@@ -43,12 +45,11 @@ sub handle {
 }
 
 sub _error {
-  my $self = shift;
+  my ($self, %param) = @_;
 
   $::auth->punish_wrong_login;
+  $::dispatcher->handle_login_error(%param, error => 'password');
 
-  require SL::Controller::Base;
-  SL::Controller::Base->new->redirect_to('controller.pl?action=LoginScreen/user_login&error=password');
   return 0;
 }
 

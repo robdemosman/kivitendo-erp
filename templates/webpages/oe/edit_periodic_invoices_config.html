@@ -8,6 +8,18 @@
 [%- END -%]
 
  <form name="Form" action="oe.pl" method="post">
+  [%- IF popup_dialog -%]
+    [% L.button_tag(popup_js_assign_function, LxERP.t8('Assign')) %]
+    [% L.button_tag(popup_js_close_function, LxERP.t8('Cancel')) %]
+
+  [%- ELSE -%]
+    [% L.hidden_tag('action', 'save_periodic_invoices_config') %]
+
+    <p>
+     [% L.submit_tag('', LxERP.t8('Assign')) %]
+     [% L.submit_tag('', LxERP.t8('Cancel'), onclick => "self.close(); return false;") %]
+    </p>
+  [%- END -%]
 
   <p>
    <table border="0">
@@ -101,7 +113,7 @@
 
     <tr class="rule-before">
      <th align="right">[%- LxERP.t8("Send invoice via email") %]</th>
-     <td>[% L.checkbox_tag("send_email", onclick => "toggle_send_email_ctrl()", checked=config.send_email) %]</td>
+     <td>[% L.checkbox_tag("send_email", onclick => "toggle_send_email_ctrl()", checked=config.send_email, disabled=postal_invoice) %]</td>
     </tr>
     <tr>
      <th align="right">[%- LxERP.t8("Email of the invoice recipient") %]</th>
@@ -129,7 +141,7 @@
 
     <tr>
      <th align="right" valign="top">[%- LxERP.t8("Message") %]</th>
-     <td valign="top">[% L.textarea_tag("email_body", config.email_body, disabled=!config.send_email, rows=8, style=style) %]</td>
+     <td valign="top">[% L.textarea_tag("email_body", config.email_body, disabled=!config.send_email, rows=8, style=style, class="texteditor texteditor-space-for-toolbar") %]</td>
     </tr>
    </table>
   </p>
@@ -140,19 +152,6 @@
   <p>(2): [% LxERP.t8("If missing then the start date will be used.") %]</p>
   <p>(3): [% LxERP.t8("Multiple addresses can be entered separated by commas.") %]</p>
   <p>(4): [% LxERP.t8("If left empty the default sender from the kivitendo configuration will be used (key 'email_from' in section 'periodic_invoices'; current value: #1).", HTML.escape(LXCONFIG.periodic_invoices.email_from)) %]</p>
-
-  [%- IF popup_dialog -%]
-    [% L.button_tag(popup_js_assign_function, LxERP.t8('Assign')) %]
-    [% L.button_tag(popup_js_close_function, LxERP.t8('Cancel')) %]
-
-  [%- ELSE -%]
-    [% L.hidden_tag('action', 'save_periodic_invoices_config') %]
-
-    <p>
-     [% L.submit_tag('', LxERP.t8('Assign')) %]
-     [% L.submit_tag('', LxERP.t8('Cancel'), onclick => "self.close(); return false;") %]
-    </p>
-  [%- END -%]
  </form>
 
  <script type="text/javascript">
@@ -169,7 +168,7 @@
       $('#email_recipient_address').prop('disabled', disabled);
       $('#email_sender').prop('disabled', disabled);
       $('#email_subject').prop('disabled', disabled);
-      $('#email_body').prop('disabled', disabled);
+      $('#email_body').data('ckeditorInstance').setReadOnly(disabled);
     }
     -->
  </script>

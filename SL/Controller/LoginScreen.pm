@@ -58,7 +58,9 @@ sub action_login {
 
   %::myconfig      = $login ? $::auth->read_user(login => $login) : ();
   $::locale        = Locale->new($::myconfig{countrycode}) if $::myconfig{countrycode};
-  SL::Dispatcher::AuthHandler::User->new->handle;
+  my $auth_result  = SL::Dispatcher::AuthHandler::User->new->handle(callback => $::form->{callback});
+
+  $::dispatcher->end_request unless $auth_result;
 
   $::request->layout(SL::Layout::Dispatcher->new(style => $::myconfig{menustyle}));
 
@@ -163,7 +165,9 @@ sub error_state {
 }
 
 sub set_layout {
-  $::request->{layout} = SL::Layout::Dispatcher->new(style => 'login');
+  $::request->{layout} = $::request->is_mobile
+    ? SL::Layout::Dispatcher->new(style => 'mobile_login')
+    : SL::Layout::Dispatcher->new(style => 'login');
 }
 
 sub init_clients {
@@ -179,7 +183,7 @@ sub init_default_client_id {
 sub show_login_form {
   my ($self, %params) = @_;
 
-  $self->render('login_screen/user_login', %params, version => SL::Version->get_version );
+  $self->render('login_screen/user_login', %params, version => SL::Version->get_version, callback => $::form->{callback});
 }
 
 1;

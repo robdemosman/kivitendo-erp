@@ -134,18 +134,19 @@ sub _post_transaction {
     $query =
       qq|UPDATE ar set
            invnumber = ?, ordnumber = ?, transdate = ?, customer_id = ?,
-           taxincluded = ?, amount = ?, duedate = ?, paid = ?,
+           taxincluded = ?, amount = ?, duedate = ?, deliverydate = ?, tax_point = ?, paid = ?,
            currency_id = (SELECT id FROM currencies WHERE name = ?),
            netamount = ?, notes = ?, department_id = ?,
            employee_id = ?, storno = ?, storno_id = ?, globalproject_id = ?,
-           direct_debit = ?
+           direct_debit = ?, transaction_description = ?
          WHERE id = ?|;
     my @values = ($form->{invnumber}, $form->{ordnumber}, conv_date($form->{transdate}), conv_i($form->{customer_id}), $form->{taxincluded} ? 't' : 'f', $form->{amount},
-                  conv_date($form->{duedate}), $form->{paid},
+                  conv_date($form->{duedate}), conv_date($form->{deliverydate}), conv_date($form->{tax_point}), $form->{paid},
                   $form->{currency},
                   $form->{netamount}, $form->{notes}, conv_i($form->{department_id}),
                   conv_i($form->{employee_id}), $form->{storno} ? 't' : 'f', $form->{storno_id},
-                  conv_i($form->{globalproject_id}), $form->{direct_debit} ? 't' : 'f', conv_i($form->{id}));
+                  conv_i($form->{globalproject_id}), $form->{direct_debit} ? 't' : 'f', $form->{transaction_description},
+                  conv_i($form->{id}));
     do_query($form, $dbh, $query, @values);
 
     # add individual transactions for AR, amount and taxes
@@ -481,11 +482,13 @@ sub ar_transactions {
 
   my $query =
     qq|SELECT DISTINCT a.id, a.invnumber, a.ordnumber, a.cusordnumber, a.transdate, | .
+    qq|  a.donumber, a.deliverydate, | .
     qq|  a.duedate, a.netamount, a.amount, a.paid, | .
     qq|  a.invoice, a.datepaid, a.notes, a.shipvia, | .
     qq|  a.shippingpoint, a.storno, a.storno_id, a.globalproject_id, | .
     qq|  a.marge_total, a.marge_percent, | .
     qq|  a.transaction_description, a.direct_debit, | .
+    qq|  a.type, | .
     qq|  pr.projectnumber AS globalprojectnumber, | .
     qq|  c.name, c.customernumber, c.country, c.ustid, b.description as customertype, | .
     qq|  c.id as customer_id, | .
@@ -519,16 +522,16 @@ sub ar_transactions {
   # Permissions:
   # - Always return invoices & AR transactions for projects the employee has "view invoices" permissions for, no matter what the other rules say.
   # - Exclude AR transactions if no permissions for them exist.
-  # - Limit to own invoices unless may edit all invoices.
-  # - If may edit all, allow filtering by employee/salesman.
+  # - Limit to own invoices unless may edit all invoices or view invoices is allowed.
+  # - If may edit all or view invoices is allowed, allow filtering by employee/salesman.
   my (@permission_where, @permission_values);
 
-  if ($::auth->assert('invoice_edit', 1)) {
+  if ($::auth->assert('invoice_edit', 1) || $::auth->assert('sales_invoice_view', 1)) {
     if (!$::auth->assert('show_ar_transactions', 1) ) {
       push @permission_where, "NOT invoice = 'f'";  # remove ar transactions from Sales -> Reports -> Invoices
     }
 
-    if (!$::auth->assert('sales_all_edit', 1)) {
+    if (!$::auth->assert('sales_all_edit', 1) && !$::auth->assert('sales_invoice_view', 1)) {
       # only show own invoices
       push @permission_where,  "a.employee_id = ?";
       push @permission_values, SL::DB::Manager::Employee->current->id;
@@ -545,7 +548,7 @@ sub ar_transactions {
     }
   }
 
-  if (@permission_where || !$::auth->assert('invoice_edit', 1)) {
+  if (@permission_where || (!$::auth->assert('invoice_edit', 1) && !$::auth->assert('sales_invoice_view', 1))) {
     my $permission_where_str = @permission_where ? "OR (" . join(" AND ", map { "($_)" } @permission_where) . ")" : "";
     $where .= qq|
       AND (   (a.globalproject_id IN (
@@ -570,11 +573,11 @@ sub ar_transactions {
     $where .= " AND c.business_id = ?";
     push(@values, $business_id);
   }
-  if ($form->{department_id}) {
-    $where .= " AND a.department_id = ?";
-    push(@values, $form->{department_id});
+  if ($form->{taxzone_id}) {
+    $where .= " AND a.taxzone_id = ?";
+    push(@values, $form->{taxzone_id});
   }
-  foreach my $column (qw(invnumber ordnumber cusordnumber notes transaction_description)) {
+  foreach my $column (qw(invnumber ordnumber cusordnumber notes transaction_description shipvia shippingpoint)) {
     if ($form->{$column}) {
       $where .= " AND a.$column ILIKE ?";
       push(@values, like($form->{$column}));
@@ -682,7 +685,7 @@ SQL
   my $sortdir   = !defined $form->{sortdir} ? 'ASC' : $form->{sortdir} ? 'ASC' : 'DESC';
   my $sortorder = join(', ', map { "$_ $sortdir" } @a);
 
-  if (grep({ $_ eq $form->{sort} } qw(id transdate duedate invnumber ordnumber cusordnumber name datepaid employee shippingpoint shipvia transaction_description department))) {
+  if (grep({ $_ eq $form->{sort} } qw(id transdate duedate invnumber ordnumber cusordnumber donumber deliverydate name datepaid employee shippingpoint shipvia transaction_description department taxzone))) {
     $sortorder = $form->{sort} . " $sortdir";
   }
 

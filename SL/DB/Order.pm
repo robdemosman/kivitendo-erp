@@ -10,6 +10,7 @@ use List::MoreUtils qw(any);
 
 use SL::DB::MetaSetup::Order;
 use SL::DB::Manager::Order;
+use SL::DB::Helper::Attr;
 use SL::DB::Helper::AttrHTML;
 use SL::DB::Helper::AttrSorted;
 use SL::DB::Helper::FlattenToForm;
@@ -17,6 +18,7 @@ use SL::DB::Helper::LinkedRecords;
 use SL::DB::Helper::PriceTaxCalculator;
 use SL::DB::Helper::PriceUpdater;
 use SL::DB::Helper::TransNumberGenerator;
+use SL::Locale::String qw(t8);
 use SL::RecordLinks;
 use Rose::DB::Object::Helpers qw(as_tree);
 
@@ -40,7 +42,14 @@ __PACKAGE__->meta->add_relationship(
     column_map             => { id => 'trans_id' },
     query_args             => [ module => 'OE' ],
   },
+  exchangerate_obj         => {
+    type                   => 'one to one',
+    class                  => 'SL::DB::Exchangerate',
+    column_map             => { currency_id => 'currency_id', transdate => 'transdate' },
+  },
 );
+
+SL::DB::Helper::Attr::make(__PACKAGE__, daily_exchangerate => 'numeric');
 
 __PACKAGE__->meta->initialize;
 
@@ -48,6 +57,9 @@ __PACKAGE__->attr_html('notes');
 __PACKAGE__->attr_sorted('items');
 
 __PACKAGE__->before_save('_before_save_set_ord_quo_number');
+__PACKAGE__->before_save('_before_save_create_new_project');
+__PACKAGE__->before_save('_before_save_remove_empty_custom_shipto');
+__PACKAGE__->before_save('_before_save_set_custom_shipto_module');
 
 # hooks
 
@@ -60,6 +72,47 @@ sub _before_save_set_ord_quo_number {
 
   my $field = $self->quotation ? 'quonumber' : 'ordnumber';
   $self->create_trans_number if !$self->$field;
+
+  return 1;
+}
+sub _before_save_create_new_project {
+  my ($self) = @_;
+
+  # force new project, if not set yet
+  if ($::instance_conf->get_order_always_project && !$self->globalproject_id && ($self->type eq 'sales_order')) {
+
+    die t8("Error while creating project with project number of new order number, project number #1 already exists!", $self->ordnumber)
+      if SL::DB::Manager::Project->find_by(projectnumber => $self->ordnumber);
+
+    eval {
+      my $new_project = SL::DB::Project->new(
+          projectnumber     => $self->ordnumber,
+          description       => $self->customer->name,
+          customer_id       => $self->customer->id,
+          active            => 1,
+          project_type_id   => $::instance_conf->get_project_type_id,
+          project_status_id => $::instance_conf->get_project_status_id,
+          );
+       $new_project->save;
+       $self->globalproject_id($new_project->id);
+    } or die t8('Could not create new project #1', $@);
+  }
+  return 1;
+}
+
+
+sub _before_save_remove_empty_custom_shipto {
+  my ($self) = @_;
+
+  $self->custom_shipto(undef) if $self->custom_shipto && $self->custom_shipto->is_empty;
+
+  return 1;
+}
+
+sub _before_save_set_custom_shipto_module {
+  my ($self) = @_;
+
+  $self->custom_shipto->module('OE') if $self->custom_shipto;
 
   return 1;
 }
@@ -85,6 +138,20 @@ sub is_type {
   return shift->type eq shift;
 }
 
+sub deliverydate {
+  # oe doesn't have deliverydate, but it does have reqdate.
+  # But this has a different meaning for sales quotations.
+  # deliverydate can be used to determine tax if tax_point isn't set.
+
+  return $_[0]->reqdate if $_[0]->type ne 'sales_quotation';
+}
+
+sub effective_tax_point {
+  my ($self) = @_;
+
+  return $self->tax_point || $self->deliverydate || $self->transdate;
+}
+
 sub displayable_type {
   my $type = shift->type;
 
@@ -103,6 +170,33 @@ sub displayable_name {
 sub is_sales {
   croak 'not an accessor' if @_ > 1;
   return !!shift->customer_id;
+}
+
+sub daily_exchangerate {
+  my ($self, $val) = @_;
+
+  return 1 if $self->currency_id == $::instance_conf->get_currency_id;
+
+  my $rate = (any { $self->is_type($_) } qw(sales_quotation sales_order))      ? 'buy'
+           : (any { $self->is_type($_) } qw(request_quotation purchase_order)) ? 'sell'
+           : undef;
+  return if !$rate;
+
+  if (defined $val) {
+    croak t8('exchange rate has to be positive') if $val <= 0;
+    if (!$self->exchangerate_obj) {
+      $self->exchangerate_obj(SL::DB::Exchangerate->new(
+        currency_id => $self->currency_id,
+        transdate   => $self->transdate,
+        $rate       => $val,
+      ));
+    } elsif (!defined $self->exchangerate_obj->$rate) {
+      $self->exchangerate_obj->$rate($val);
+    } else {
+      croak t8('exchange rate already exists, no update allowed');
+    }
+  }
+  return $self->exchangerate_obj->$rate if $self->exchangerate_obj;
 }
 
 sub invoices {
@@ -144,8 +238,23 @@ sub convert_to_invoice {
   my $invoice;
   if (!$self->db->with_transaction(sub {
     require SL::DB::Invoice;
-    $invoice = SL::DB::Invoice->new_from($self)->post(%params) || die;
+    $invoice = SL::DB::Invoice->new_from($self, %params)->post || die;
     $self->link_to_record($invoice);
+    # TODO extend link_to_record for items, otherwise long-term no d.r.y.
+    foreach my $item (@{ $invoice->items }) {
+      foreach (qw(orderitems)) {
+        if ($item->{"converted_from_${_}_id"}) {
+          die unless $item->{id};
+          RecordLinks->create_links('mode'       => 'ids',
+                                    'from_table' => $_,
+                                    'from_ids'   => $item->{"converted_from_${_}_id"},
+                                    'to_table'   => 'invoice',
+                                    'to_id'      => $item->{id},
+          ) || die;
+          delete $item->{"converted_from_${_}_id"};
+        }
+      }
+    }
     $self->update_attributes(closed => 1);
     1;
   })) {
@@ -181,7 +290,7 @@ sub convert_to_delivery_order {
       }
     }
 
-    $self->update_attributes(delivered => 1);
+    $self->update_attributes(delivered => 1) unless $::instance_conf->get_shipped_qty_require_stock_out;
     1;
   })) {
     return undef;
@@ -216,14 +325,13 @@ sub new_from {
     { from => 'purchase_order',    to => 'purchase_order',    abbr => 'popo' },
     { from => 'sales_order',       to => 'purchase_order',    abbr => 'sopo' },
     { from => 'purchase_order',    to => 'sales_order',       abbr => 'poso' },
+    { from => 'sales_order',       to => 'sales_quotation',   abbr => 'sosq' },
+    { from => 'purchase_order',    to => 'request_quotation', abbr => 'porq' },
   );
   my $from_to = (grep { $_->{from} eq $source->type && $_->{to} eq $destination_type} @from_tos)[0];
   croak("Cannot convert from '" . $source->type . "' to '" . $destination_type . "'") if !$from_to;
 
   my $is_abbr_any = sub {
-    # foreach my $abbr (@_) {
-    #   croak "no such abbreviation: '$abbr'" if !grep { $_->{abbr} eq $abbr } @from_tos;
-    # }
     any { $from_to->{abbr} eq $_ } @_;
   };
 
@@ -235,20 +343,21 @@ sub new_from {
   }
 
   my %args = ( map({ ( $_ => $source->$_ ) } qw(amount cp_id currency_id cusordnumber customer_id delivery_customer_id delivery_term_id delivery_vendor_id
-                                                department_id employee_id globalproject_id intnotes marge_percent marge_total language_id netamount notes
-                                                ordnumber payment_id quonumber reqdate salesman_id shippingpoint shipvia taxincluded taxzone_id
-                                                transaction_description vendor_id
+                                                department_id exchangerate globalproject_id intnotes marge_percent marge_total language_id netamount notes
+                                                ordnumber payment_id quonumber reqdate salesman_id shippingpoint shipvia taxincluded tax_point taxzone_id
+                                                transaction_description vendor_id billing_address_id
                                              )),
                quotation => !!($destination_type =~ m{quotation$}),
                closed    => 0,
                delivered => 0,
                transdate => DateTime->today_local,
+               employee  => SL::DB::Manager::Employee->current,
             );
 
   if ( $is_abbr_any->(qw(sopo poso)) ) {
     $args{ordnumber} = undef;
+    $args{quonumber} = undef;
     $args{reqdate}   = DateTime->today_local->next_workday();
-    $args{employee}  = SL::DB::Manager::Employee->current;
   }
   if ( $is_abbr_any->(qw(sopo)) ) {
     $args{customer_id}      = undef;
@@ -261,6 +370,11 @@ sub new_from {
   }
   if ( $is_abbr_any->(qw(soso)) ) {
     $args{periodic_invoices_config} = $source->periodic_invoices_config->clone_and_reset if $source->periodic_invoices_config;
+  }
+  if ( $is_abbr_any->(qw(sosq porq)) ) {
+    $args{ordnumber} = undef;
+    $args{quonumber} = undef;
+    $args{reqdate}   = DateTime->today_local->next_workday();
   }
 
   # Custom shipto addresses (the ones specific to the sales/purchase
@@ -294,6 +408,7 @@ sub new_from {
                                                         marge_percent marge_price_factor marge_total
                                                         ordnumber parts_id price_factor price_factor_id pricegroup_id
                                                         project_id qty reqdate sellprice serialnumber ship subtotal transdate unit
+                                                        optional
                                                      )),
                                                  custom_variables => \@custom_variables,
     );
@@ -342,15 +457,15 @@ sub new_from_multi {
 
   # set this entries to undef that yield different information
   my %attributes;
-  foreach my $attr (qw(ordnumber transdate reqdate taxincluded shippingpoint
+  foreach my $attr (qw(ordnumber transdate reqdate tax_point taxincluded shippingpoint
                        shipvia notes closed delivered reqdate quonumber
                        cusordnumber proforma transaction_description
                        order_probability expected_billing_date)) {
     $attributes{$attr} = undef if any { ($sources->[0]->$attr//'') ne ($_->$attr//'') } @$sources;
   }
-  foreach my $attr (qw(cp_id currency_id employee_id salesman_id department_id
+  foreach my $attr (qw(cp_id currency_id salesman_id department_id
                        delivery_customer_id delivery_vendor_id shipto_id
-                       globalproject_id)) {
+                       globalproject_id exchangerate)) {
     $attributes{$attr} = undef if any { ($sources->[0]->$attr||0) != ($_->$attr||0) }   @$sources;
   }
 
@@ -362,6 +477,9 @@ sub new_from_multi {
 
   # no periodic invoice config for new order
   $attributes{periodic_invoices_config} = undef;
+
+  # set emplyee to the current one
+  $attributes{employee} = SL::DB::Manager::Employee->current;
 
   # copy global ordnumber, transdate, cusordnumber into item scope
   #   unless already present there
@@ -453,6 +571,30 @@ Returns one of the following string types:
 
 Returns true if the order is of the given type.
 
+=head2 C<daily_exchangerate $val>
+
+Gets or sets the exchangerate object's value. This is the value from the
+table C<exchangerate> depending on the order's currency, the transdate and
+if it is a sales or purchase order.
+
+The order object (respectively the table C<oe>) has an own column
+C<exchangerate> which can be get or set with the accessor C<exchangerate>.
+
+The idea is to drop the legacy table C<exchangerate> in the future and to
+give all relevant tables it's own C<exchangerate> column.
+
+So, this method is here if you need to access the "legacy" exchangerate via
+an order object.
+
+=over 4
+
+=item C<$val>
+
+(optional) If given, the exchangerate in the "legacy" table is set to this
+value, depending on currency, transdate and sales or purchase.
+
+=back
+
 =head2 C<convert_to_delivery_order %params>
 
 Creates a new delivery order with C<$self> as the basis by calling
@@ -474,7 +616,7 @@ L<SL::DB::Invoice::new_from>. That invoice is posted, and C<$self> is
 linked to the new invoice via L<SL::DB::RecordLink>. C<$self>'s
 C<closed> attribute is set to C<true>, and C<$self> is saved.
 
-The arguments in C<%params> are passed to L<SL::DB::Invoice::post>.
+The arguments in C<%params> are passed to L<SL::DB::Invoice::new_from>.
 
 Returns the new invoice instance on success and C<undef> on
 failure. The whole process is run inside a transaction. On failure

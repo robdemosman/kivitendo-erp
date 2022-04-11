@@ -4,6 +4,7 @@
 <h1>[% title %]</h1>
 
  <form method="post" name="search" action="ap.pl" id="form">
+  [% L.hidden_tag("sort", "transdate") %]
 
   <table width=100%>
   <tr>
@@ -30,6 +31,13 @@
       <td>[% L.input_tag("ordnumber", "", style=style) %]</td>
      </tr>
      <tr>
+      <th align="right">[% 'Steuersatz' | $T8 %]</th>
+      <td>[% L.select_tag('taxzone_id', ALL_TAXZONES, with_empty=1, title_key='description', style=style) %]</td>
+     </tr>
+     <tr>
+      <th align="right" nowrap>[% 'Transaction description' | $T8 %]</th>
+      <td>[% L.input_tag("transaction_description", "", style=style) %]</td>
+     <tr>
       <th align=right nowrap>[% 'Notes' | $T8 %]</th>
       <td>[% L.input_tag("notes", "", style=style) %]</td>
       <th align="right">[% 'Part Description' | $T8 %]</th>
@@ -37,7 +45,7 @@
      </tr>
      <tr>
       <th align="right">[% 'Project Number' | $T8 %]</th>
-      <td>[% P.project.picker("project_id", project_id, style=style) %]</td>
+      <td>[% P.project.picker("project_id", project_id, active="both", valid="both", style=style) %]</td>
       <th align="right">[% 'Part Number' | $T8 %]</th>
       <td>[% L.input_tag("parts_partnumber", "", style=style) %]</td>
      </tr>
@@ -49,7 +57,14 @@
        [% L.date_tag('transdateto') %]
      </td>
     </tr>
-   <input type=hidden name=sort value=transdate>
+     <tr>
+      <th align=right nowrap>[% 'Due Date' | $T8 %]</th>
+      <td>
+       [% L.date_tag('duedatefrom') %]
+       [% 'Bis' | $T8 %]
+       [% L.date_tag('duedateto') %]
+     </td>
+    </tr>
    </table>
     </td>
     </tr>
@@ -111,6 +126,8 @@
            <td nowrap>[% 'Subtotal' | $T8 %]</td>
            <td align=right><input name="l_globalprojectnumber" class=checkbox type=checkbox value=Y></td>
            <td nowrap>[% 'Document Project Number' | $T8 %]</td>
+           <td align="right"><input name="l_transaction_description" id="l_transaction_description" class=checkbox type=checkbox value=Y[% IF INSTANCE_CONF.get_require_transaction_description_ps %] checked[% END %]></td>
+           <td nowrap>[% 'Transaction description' | $T8 %]</td>
          </tr>
           <tr>
            <td align=right><input name="l_taxzone" class=checkbox type=checkbox value=Y></td>
@@ -122,8 +139,14 @@
            <td align=right><input name="l_direct_debit" id="l_direct_debit" class=checkbox type=checkbox value=Y></td>
            <td nowrap>[% 'direct debit' | $T8 %]</td>
           </tr>
+          <tr>
+           <td align=right><input name="l_debit_chart" class=checkbox type=checkbox value=Y></td>
+           <td nowrap>[% 'Debit Account' | $T8 %]</td>
+           <td align=right><input name="l_insertdate" class=checkbox type=checkbox value=Y></td>
+           <td nowrap>[% 'Insert Date' | $T8 %]</td>
+          </tr>
          <tr>
-          <td colspan=4 align=left><b>[% 'Vendor' | $T8 %] </td>
+          <td colspan=4 align=left><b>[% 'Vendor' | $T8 %]</b></td>
          </tr>
          <tr>
            <td align=right><input name="l_vendornumber" class=checkbox type=checkbox value=Y></td>

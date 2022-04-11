@@ -79,7 +79,7 @@ sub get_agreement_with_invoice {
     payment_within_30_days      => 1,
     remote_account_number       => 3,
     skonto_exact_amount         => 5,
-    wrong_sign                  => -1,
+    wrong_sign                  => -4,
     sepa_export_item            => 5,
     batch_sepa_transaction      => 20,
   );
@@ -99,13 +99,16 @@ sub get_agreement_with_invoice {
   $bank_code      = $invoice->vendor->bank_code        if ! $invoice->is_sales;
   $iban           = $invoice->vendor->iban             if ! $invoice->is_sales;
   $account_number = $invoice->vendor->account_number   if ! $invoice->is_sales;
-  if ( $bank_code eq $self->remote_bank_code && $account_number eq $self->remote_account_number ) {
-    $agreement += $points{remote_account_number};
-    $rule_matches .= 'remote_account_number(' . $points{'remote_account_number'} . ') ';
-  }
-  if ( $iban eq $self->remote_account_number ) {
-    $agreement += $points{remote_account_number};
-    $rule_matches .= 'remote_account_number(' . $points{'remote_account_number'} . ') ';
+
+  # check only valid remote_account_number (with some content)
+  if ($self->remote_account_number) {
+    if ($bank_code eq $self->remote_bank_code && $account_number eq $self->remote_account_number) {
+      $agreement += $points{remote_account_number};
+      $rule_matches .= 'remote_account_number(' . $points{'remote_account_number'} . ') ';
+    } elsif ($iban eq $self->remote_account_number) { # elsif -> do not add twice
+      $agreement += $points{remote_account_number};
+      $rule_matches .= 'remote_account_number(' . $points{'remote_account_number'} . ') ';
+    }
   }
 
   my $datediff = $self->transdate->{utc_rd_days} - $invoice->transdate->{utc_rd_days};
@@ -122,7 +125,7 @@ sub get_agreement_with_invoice {
 
   # compare open amount, preventing double points when open amount = invoice amount
   if ( $invoice->amount != $invoice->open_amount && abs(abs($invoice->open_amount) - abs($self->amount)) < 0.01 &&
-         $::form->format_amount(\%::myconfig,abs($invoice->amount_less_skonto),2) eq
+         $::form->format_amount(\%::myconfig,abs($invoice->open_amount),2) eq
          $::form->format_amount(\%::myconfig,abs($self->amount),2)
        ) {
     $agreement += $points{exact_open_amount};
@@ -162,11 +165,13 @@ sub get_agreement_with_invoice {
   }
 
   #check sign
-  if ( $invoice->is_sales && $self->amount < 0 ) {
+  if (( $invoice->is_sales && $invoice->amount > 0 && $self->amount < 0 ) ||
+      ( $invoice->is_sales && $invoice->amount < 0 && $self->amount > 0 )     ) { # sales credit note
     $agreement += $points{wrong_sign};
     $rule_matches .= 'wrong_sign(' . $points{'wrong_sign'} . ') ';
   }
-  if ( ! $invoice->is_sales && $self->amount > 0 ) {
+  if (( !$invoice->is_sales && $invoice->amount > 0 && $self->amount > 0)  ||
+      ( !$invoice->is_sales && $invoice->amount < 0 && $self->amount < 0)     ) { # purchase credit note
     $agreement += $points{wrong_sign};
     $rule_matches .= 'wrong_sign(' . $points{'wrong_sign'} . ') ';
   }

@@ -42,6 +42,7 @@ use SL::AM;
 use SL::Common;
 use SL::CVar;
 use SL::DB::DeliveryOrder;
+use SL::DB::DeliveryOrder::TypeData qw(:types is_valid_type);
 use SL::DB::Status;
 use SL::DBUtils;
 use SL::Helper::ShippedQty;
@@ -79,6 +80,7 @@ sub transactions {
          dord.transaction_description, dord.itime::DATE AS insertdate,
          pr.projectnumber AS globalprojectnumber,
          dep.description AS department,
+         dord.order_type,
          e.name AS employee,
          sm.name AS salesman
        FROM delivery_orders dord
@@ -90,7 +92,10 @@ sub transactions {
        LEFT JOIN department dep ON (dord.department_id = dep.id)
 |;
 
-  push @where, ($form->{type} eq 'sales_delivery_order' ? '' : 'NOT ') . qq|COALESCE(dord.is_sales, FALSE)|;
+  if ($form->{type} && is_valid_type($form->{type})) {
+    push @where, 'dord.order_type = ?';
+    push @values, $form->{type};
+  }
 
   if ($form->{department_id}) {
     push @where,  qq|dord.department_id = ?|;
@@ -129,7 +134,8 @@ sub transactions {
     push @where, "dord.$item = ?";
     push @values, conv_i($form->{$item});
   }
-  if ( !(($vc eq 'customer' && $main::auth->assert('sales_all_edit', 1)) || ($vc eq 'vendor' && $main::auth->assert('purchase_all_edit', 1))) ) {
+  if ( !(    ($vc eq 'customer' && ($main::auth->assert('sales_all_edit',    1) || $main::auth->assert('sales_delivery_order_view',    1)))
+          || ($vc eq 'vendor'   && ($main::auth->assert('purchase_all_edit', 1) || $main::auth->assert('purchase_delivery_order_view', 1))) ) ) {
     push @where, qq|dord.employee_id = (select id from employee where login= ?)|;
     push @values, $::myconfig{login};
   }
@@ -328,8 +334,8 @@ sub _save {
     $query = qq|SELECT nextval('id')|;
     ($form->{id}) = selectrow_query($form, $dbh, $query);
 
-    $query = qq|INSERT INTO delivery_orders (id, donumber, employee_id, currency_id, taxzone_id) VALUES (?, '', ?, (SELECT currency_id FROM defaults LIMIT 1), ?)|;
-    do_query($form, $dbh, $query, $form->{id}, conv_i($form->{employee_id}), $form->{taxzone_id});
+    $query = qq|INSERT INTO delivery_orders (id, donumber, employee_id, currency_id, taxzone_id, order_type) VALUES (?, '', ?, (SELECT currency_id FROM defaults LIMIT 1), ?, ?)|;
+    do_query($form, $dbh, $query, $form->{id}, conv_i($form->{employee_id}), $form->{taxzone_id}, SALES_DELIVERY_ORDER_TYPE);
   }
 
   my $project_id;
@@ -511,25 +517,25 @@ SQL
   $query =
     qq|UPDATE delivery_orders SET
          donumber = ?, ordnumber = ?, cusordnumber = ?, transdate = ?, vendor_id = ?,
-         customer_id = ?, reqdate = ?,
+         customer_id = ?, reqdate = ?, tax_point = ?,
          shippingpoint = ?, shipvia = ?, notes = ?, intnotes = ?, closed = ?,
-         delivered = ?, department_id = ?, language_id = ?, shipto_id = ?,
+         delivered = ?, department_id = ?, language_id = ?, shipto_id = ?, billing_address_id = ?,
          globalproject_id = ?, employee_id = ?, salesman_id = ?, cp_id = ?, transaction_description = ?,
-         is_sales = ?, taxzone_id = ?, taxincluded = ?, payment_id = ?, currency_id = (SELECT id FROM currencies WHERE name = ?),
+         order_type = ?, taxzone_id = ?, taxincluded = ?, payment_id = ?, currency_id = (SELECT id FROM currencies WHERE name = ?),
          delivery_term_id = ?
        WHERE id = ?|;
 
   @values = ($form->{donumber}, $form->{ordnumber},
              $form->{cusordnumber}, conv_date($form->{transdate}),
              conv_i($form->{vendor_id}), conv_i($form->{customer_id}),
-             conv_date($form->{reqdate}), $form->{shippingpoint}, $form->{shipvia},
+             conv_date($form->{reqdate}), conv_date($form->{tax_point}), $form->{shippingpoint}, $form->{shipvia},
              $restricter->process($form->{notes}), $form->{intnotes},
              $form->{closed} ? 't' : 'f', $form->{delivered} ? "t" : "f",
-             conv_i($form->{department_id}), conv_i($form->{language_id}), conv_i($form->{shipto_id}),
+             conv_i($form->{department_id}), conv_i($form->{language_id}), conv_i($form->{shipto_id}), conv_i($form->{billing_address_id}),
              conv_i($form->{globalproject_id}), conv_i($form->{employee_id}),
              conv_i($form->{salesman_id}), conv_i($form->{cp_id}),
              $form->{transaction_description},
-             $form->{type} =~ /^sales/ ? 't' : 'f',
+             $form->{type} =~ /^sales/ ? SALES_DELIVERY_ORDER_TYPE : PURCHASE_DELIVERY_ORDER_TYPE,
              conv_i($form->{taxzone_id}), $form->{taxincluded} ? 't' : 'f', conv_i($form->{payment_id}), $form->{currency},
              conv_i($form->{delivery_term_id}),
              conv_i($form->{id}));
@@ -557,10 +563,10 @@ SQL
                             'to_id'      => $form->{id},
     );
   delete $form->{convert_from_oe_ids};
-
-  $self->mark_orders_if_delivered('do_id' => $form->{id},
-                                  'type'  => $form->{type} eq 'sales_delivery_order' ? 'sales' : 'purchase',
-                                  'dbh'   => $dbh,);
+  unless ($::instance_conf->get_shipped_qty_require_stock_out) {
+    $self->mark_orders_if_delivered('do_id' => $form->{id},
+                                    'type'  => $form->{type} eq 'sales_delivery_order' ? 'sales' : 'purchase');
+  }
 
   $form->{saved_donumber} = $form->{donumber};
   $form->{saved_ordnumber} = $form->{ordnumber};
@@ -649,6 +655,38 @@ sub delete {
   return $rc;
 }
 
+sub delete_transfers {
+  $main::lxdebug->enter_sub();
+
+  my ($self)   = @_;
+
+  my $myconfig = \%main::myconfig;
+  my $form     = $main::form;
+
+  my $rc = SL::DB::Order->new->db->with_transaction(sub {
+
+    my $do = SL::DB::DeliveryOrder->new(id => $form->{id})->load;
+    die "No valid delivery order found" unless ref $do eq 'SL::DB::DeliveryOrder';
+
+    my $dt = DateTime->today->subtract(days => $::instance_conf->get_undo_transfer_interval);
+    croak "Wrong call. Please check undoing interval" unless $do->itime > $dt;
+
+    foreach my $doi (@{ $do->orderitems }) {
+      foreach my $dois (@{ $doi->delivery_order_stock_entries}) {
+        $dois->inventory->delete;
+        $dois->delete;
+      }
+    }
+    $do->update_attributes(delivered => 0);
+
+    1;
+  });
+
+  $main::lxdebug->leave_sub();
+
+  return $rc;
+}
+
 sub retrieve {
   $main::lxdebug->enter_sub();
 
@@ -693,13 +731,13 @@ sub retrieve {
   # so if any of these infos is important (or even different) for any item,
   # it will be killed out and then has to be fetched from the item scope query further down
   $query =
-    qq|SELECT dord.cp_id, dord.donumber, dord.ordnumber, dord.transdate, dord.reqdate,
+    qq|SELECT dord.cp_id, dord.donumber, dord.ordnumber, dord.transdate, dord.reqdate, dord.tax_point,
          dord.shippingpoint, dord.shipvia, dord.notes, dord.intnotes,
          e.name AS employee, dord.employee_id, dord.salesman_id,
          dord.${vc}_id, cv.name AS ${vc},
          dord.closed, dord.reqdate, dord.department_id, dord.cusordnumber,
          d.description AS department, dord.language_id,
-         dord.shipto_id,
+         dord.shipto_id, dord.billing_address_id,
          dord.itime, dord.mtime,
          dord.globalproject_id, dord.delivered, dord.transaction_description,
          dord.taxzone_id, dord.taxincluded, dord.payment_id, (SELECT cu.name FROM currencies cu WHERE cu.id=dord.currency_id) AS currency,
@@ -1030,9 +1068,9 @@ sub order_details {
       my $sortorder = "";
       if ($form->{groupitems}) {
         $sortorder =
-          qq|ORDER BY pg.partsgroup, a.oid|;
+          qq|ORDER BY pg.partsgroup, a.position|;
       } else {
-        $sortorder = qq|ORDER BY a.oid|;
+        $sortorder = qq|ORDER BY a.position|;
       }
 
       do_statement($form, $h_pg, $q_pg, conv_i($form->{"id_$i"}));
@@ -1230,6 +1268,11 @@ sub transfer_in_out {
   }
 
   WH->transfer(@transfers);
+
+  if ($::instance_conf->get_shipped_qty_require_stock_out) {
+    $self->mark_orders_if_delivered('do_id' => $form->{id},
+                                    'type'  => $form->{type} eq 'sales_delivery_order' ? 'sales' : 'purchase');
+  }
 
   $main::lxdebug->leave_sub();
 }

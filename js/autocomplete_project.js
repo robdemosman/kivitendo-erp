@@ -25,7 +25,7 @@ namespace('kivi', function(k){
     var o = $.extend({
       limit: 20,
       delay: 50,
-    }, options);
+    }, $real.data('project-picker-data'), options);
     var STATES = {
       PICKED:    CLASSES.PICKED,
       UNDEFINED: CLASSES.UNDEFINED
@@ -38,16 +38,63 @@ namespace('kivi', function(k){
     var last_dummy   = $dummy.val();
     var timer;
 
+    function open_dialog () {
+      k.popup_dialog({
+        url: 'controller.pl?action=Project/project_picker_search',
+        // data that can be accessed in template project_picker_search via FORM.boss
+        data: $.extend({  // add id of part to the rest of the data in ajax_data, e.g. no_paginate, booked, ...
+          real_id: real_id,
+          select: 1,
+        }, ajax_data($dummy.val())),
+        id: 'project_selection',
+        dialog: {
+          title: k.t8('Project picker'),
+          width: 800,
+          height: 800,
+        },
+        load: function() { init_search(); }
+      });
+      window.clearTimeout(timer);
+      return true;
+    }
+
+    function init_search() {
+      $('#project_picker_filter').keypress(function(e) { result_timer(e) }).focus();
+      $('#no_paginate').change(function() { update_results() });
+      $('#project_picker_clear_filter').click(function() {
+        $('#project_picker_filter').val('').focus();
+        update_results();
+      });
+    }
+
     function ajax_data(term) {
       var data = {
         'filter.all:substr:multi::ilike': term,
-        'filter.valid': 'valid',
         no_paginate:  $('#no_paginate').prop('checked') ? 1 : 0,
         current:  $real.val(),
       };
 
-      if ($customer_id && $customer_id.val())
-        data['filter.customer_id'] = $customer_id.val().split(',');
+      if (o.customer_id)
+        data['filter.customer_id'] = o.customer_id.split(',');
+
+      if (o.active) {
+        if (o.active === 'active')   data['filter.active'] = 'active';
+        if (o.active === 'inactive') data['filter.active'] = 'inactive';
+        // both => no filter
+      } else {
+        data['filter.active'] = 'active'; // default
+      }
+
+      if (o.valid) {
+        if (o.valid === 'valid')   data['filter.valid'] = 'valid';
+        if (o.valid === 'invalid') data['filter.valid'] = 'invalid';
+        // both => no filter
+      } else {
+        data['filter.valid'] = 'valid'; // default
+      }
+
+      if (o.description_style)
+        data['description_style'] = o.description_style;
 
       return data;
     }
@@ -99,7 +146,9 @@ namespace('kivi', function(k){
         data: $.extend({
             'real_id': $real.val(),
         }, ajax_data(function(){ var val = $('#project_picker_filter').val(); return val === undefined ? '' : val })),
-        success: function(data){ $('#project_picker_result').html(data) }
+        success: function(data){
+          $('#project_picker_result').html(data);
+        }
       });
     }
 
@@ -116,6 +165,10 @@ namespace('kivi', function(k){
       }
       window.clearTimeout(timer);
       timer = window.setTimeout(update_results, 100);
+    }
+
+    function close_popup() {
+      $('#project_selection').dialog('close');
     }
 
     function handle_changed_text(callbacks) {
@@ -204,36 +257,33 @@ namespace('kivi', function(k){
     });
 
     // now add a picker div after the original input
-    var pcont  = $('<span>').addClass('position-absolute');
-    var picker = $('<div>');
-    $dummy.after(pcont);
-    pcont.append(picker);
-
+    var popup_button = $('<span>').addClass('ppp_popup_button');
+    $dummy.after(popup_button);
+    popup_button.click(open_dialog);
     var pp = {
       real:           function() { return $real },
       dummy:          function() { return $dummy },
-      type:           function() { return $type },
-      customer_id:    function() { return $customer_id },
       update_results: update_results,
       result_timer:   result_timer,
       set_item:       set_item,
       reset:          make_defined_state,
       is_defined_state: function() { return state == STATES.PICKED },
-      init_results:    function () {
+      init_results: function() {
         $('div.project_picker_project').each(function(){
           $(this).click(function(){
             set_item({
               id:   $(this).children('input.project_picker_id').val(),
               name: $(this).children('input.project_picker_description').val(),
             });
+            close_popup();
             $dummy.focus();
             return true;
-          });
-        });
+          });  });
         $('#project_selection').keydown(function(e){
-           if (e.which == KEY.ESCAPE) {
-             $dummy.focus();
-           }
+          if (e.which == KEY.ESCAPE) {
+            close_popup();
+            $dummy.focus();
+          }
         });
       }
     }

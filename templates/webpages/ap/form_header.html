@@ -18,7 +18,7 @@
 <input type="hidden" name="forex" value="[% forex | html %]">
 <input type="hidden" name="lastmtime" value="[% HTML.escape(lastmtime) %]">
 
-<input type="hidden" name="id" value="[% id | html %]">
+<input id="id" type="hidden" name="id" value="[% id | html %]">
 <input type="hidden" name="sort" value="[% sort | html %]">
 <input type="hidden" name="closedto" value="[% closedto | html %]">
 <input type="hidden" name="locked" value="[% locked | html %]">
@@ -63,7 +63,7 @@
   <li><a href="#ui-tabs-webdav">[% 'WebDAV' | $T8 %]</a></li>
 [%- END %]
 [%- IF id AND INSTANCE_CONF.get_doc_storage %]
-      <li><a href="controller.pl?action=File/list&file_type=document&object_type=purchase_invoice&object_id=[% HTML.url(id) %]">[% 'Documents' | $T8 %]</a></li>
+      <li><a href="#ui-tabs-docs">[% 'Documents' | $T8 %]</a></li>
       <li><a href="controller.pl?action=File/list&file_type=attachment&object_type=purchase_invoice&object_id=[% HTML.url(id) %]">[% 'Attachments' | $T8 %]</a></li>
 [%- END %]
 [%- IF id %]
@@ -73,6 +73,10 @@
   <li><a href="[% 'controller.pl?action=AccTrans/list_transactions&trans_id=' _ HTML.url(id) | html %]">[% LxERP.t8('Transactions') %]</a></li>
 [%- END %]
  </ul>
+
+[%- IF id AND INSTANCE_CONF.get_doc_storage %]
+   <div id="ui-tabs-docs"></div>
+[%- END %]
 
 <div id="ui-tabs-basic-data">
 <table width="100%">
@@ -85,7 +89,7 @@
               <tr>
                 <th align="right" nowrap>[% 'Vendor' | $T8 %]</th>
                 <td colspan="3">
-                 [% P.customer_vendor.picker("vendor_id", vendor_id, type="vendor", style="width: 300px", onchange="\$('#update_button').click()") %]
+                 [% P.customer_vendor.picker("vendor_id", vendor_id, type="vendor", style="width: 330px", onchange="\$('#update_button').click()") %]
                  [% L.button_tag("show_vc_details('vendor')", LxERP.t8('Details (one letter abbreviation)')) %]
                  [% L.hidden_tag("previous_vendor_id", vendor_id) %]
                 </td>
@@ -130,10 +134,14 @@
               [% IF ALL_DEPARTMENTS %]
                 <tr>
                   <th align="right" nowrap>[% 'Department' | $T8 %]</th>
-                  <td colspan=3>[% L.select_tag('department_id', ALL_DEPARTMENTS, default = department_id, title_key = 'description', with_empty = 1) %]</td>
+                  <td colspan=3>[% L.select_tag('department_id', ALL_DEPARTMENTS, default = department_id, title_key = 'description', with_empty = 1, style = "width:334px") %]</td>
                 </tr>
               [% END %]
 
+              <tr>
+                <th align="right">[% 'Transaction description' | $T8 %]</th>
+                <td colspan="3">[% L.input_tag("transaction_description", transaction_description, style="width:330px", "data-validate"=INSTANCE_CONF.get_require_transaction_description_ps ? 'required' : '') %]</td>
+              </tr>
               <tr>
                 <td align="right"><input name="taxincluded" class="checkbox" type="checkbox" value="1" [% IF ( taxincluded ) %]checked[% END %]></td>
                 <th align=left nowrap>[% 'Tax Included' | $T8 %]</th>
@@ -157,16 +165,24 @@
               </tr>
               <tr>
                 <th align="right" nowrap>[% 'Invoice Date' | $T8 %]</th>
-                <td>[% L.date_tag('transdate', transdate) %]</td>
+                <td>[% L.date_tag('transdate', transdate, onchange='kivi.SalesPurchase.set_duedate_on_reference_date_change("transdate")') %]</td>
               </tr>
               <tr>
                 <th align="right" nowrap>[% 'Due Date' | $T8 %]</th>
                 <td>[% L.date_tag('duedate', duedate) %]</td>
               </tr>
               <tr>
+                <th align="right" nowrap>[% LxERP.t8('Tax point') %]</th>
+                <td>[% L.date_tag('tax_point', tax_point, id='tax_point') %]</td>
+              </tr>
+              <tr>
+                <th align=right nowrap>[% 'Delivery Date' | $T8 %]</th>
+                <td>[% L.date_tag('deliverydate', deliverydate) %]</td>
+              </tr>
+              <tr>
                 <th align="right" nowrap>[% 'Project Number' | $T8 %]</th>
                 <td>
-                  [% L.select_tag('globalproject_id', ALL_PROJECTS, with_empty = 1, default = globalproject_id, value_key = 'id', title_key = 'projectnumber', onChange = "document.getElementById('update_button').click();") %]
+                  [% P.project.picker('globalproject_id', globalproject_id, onchange="document.getElementById('update_button').click();") %]
                 </td>
               </tr>
             </table>
@@ -199,7 +215,14 @@
               <input name="amount_[% i %]" size="10" value="[% temp = "amount_"_ i %][% $temp | html %]">
             </td>
             <td>
-              [% temp = "tax_"_ i %][% $temp | html %]
+              [% temp_r = "tax_reverse_"_ i %]
+              [% IF ($temp_r) %]
+                [% $temp_r | html %]
+                &nbsp;&nbsp;&nbsp;
+                [% temp_c = "tax_charge_"_ i %][% $temp_c | html %]
+              [% ELSE %]
+                [% temp = "tax_"_ i %][% $temp | html %]
+              [% END %]
             </td>
             <td>
               [% temp = 'selected_taxchart_'_ i %]
@@ -208,7 +231,7 @@
             </td>
             <td>
               [% temp = "project_id_"_ i %]
-              [% L.select_tag(temp, ALL_PROJECTS, with_empty = 1, default = loop.last ? globalproject_id : $temp, value_key = 'id', title_key = 'projectnumber') %]
+              [% P.project.picker(temp, loop.last ? globalproject_id : $temp) %]
             </td>
           </tr>
         [% END %]
@@ -230,19 +253,24 @@
     </tr>
     <tr>
       <td>
-        <table width="100%">
-        <tr>
-          <th align="left" width="1%">[% 'Notes' | $T8 %]</th>
-          <td align="left">
-            <textarea name="notes" rows="[% textarea_rows %]" cols="50" wrap="soft" [% readonly %]>[% notes | html %]</textarea>
-          </td>
-
-          <th align="left" width=1%>[% 'Notes for vendor' | $T8 %]</th>
-          <td align="left">
-            <textarea name="intnotes" rows="[% textarea_rows %]" cols="50" wrap="soft" readonly>[% intnotes | html %]</textarea>
-          </td>
-        </tr>
-      </table>
+        <table>
+          <tr>
+           <th align="left">[% 'Notes' | $T8 %]</th>
+           <th align="left">[% 'Internal Notes' | $T8 %]</th>
+           <th align="left">[% 'Payment Terms' | $T8 %]</th>
+          </tr>
+          <tr valign="top">
+           <td>
+            [% L.textarea_tag("notes", notes, wrap="soft", rows=textarea_rows, cols=50, readonly=readonly) %]
+           </td>
+           <td>
+            [% L.textarea_tag("intnotes", intnotes, wrap="soft", rows=textarea_rows, cols=50, readonly=readonly) %]
+           </td>
+           <td>
+             [% L.select_tag('payment_id', payment_terms, default=payment_id, title_key='description', with_empty=1, style="width: 250px", onchange="kivi.SalesPurchase.set_duedate_on_reference_date_change('transdate')") %]
+           </td>
+          <tr>
+        </table>
     </td>
   </tr>
   <tr>
@@ -304,7 +332,7 @@
             [% temp = "paid_"_ i %]
             <td align="center">
               [% IF( changeable ) %]
-                <input name="[% temp %]" size="11" data-validate="number" class="numeric" value="[% $temp | html %]">
+                <input name="[% temp %]" size="11" data-validate="number" class="numeric" value="[% $temp | html %]" id="[%- 'payment_' _ temp -%]">
               [% ELSE %]
                 [% $temp | html %]
                 <input type="hidden" name="[% temp %]" value="[% $temp | html %]">
@@ -347,7 +375,7 @@
             <td align="center">
               [% temp = "paid_project_id_"_ i %]
               [% IF( changeable ) %]
-                [% L.select_tag(temp, ALL_PROJECTS, with_empty = 1, default = $temp, value_key = 'id', title_key = 'projectnumber') %]
+                [% P.project.picker(temp, $temp) %]
               [% ELSE %]
                 <input type="hidden" name="[% temp %]" value="[% $temp | html %]">
                 [% temp = "label"_ temp %]
@@ -384,5 +412,5 @@
 <hr size="3" noshade>
 
 <script type='text/javascript'>
- $('#ap_set_to_paid_missing').click(function(){ $('input[name^="paid_"]:last').val('[% LxERP.format_amount(paid_missing, 2) %]') });
+ $('#ap_set_to_paid_missing').click(function(){ $('input[id^="payment_paid_"]:last').val("[% LxERP.format_amount(paid_missing, 2) %]") });
 </script>

@@ -50,7 +50,7 @@ use SL::DB::Employee;
 use SL::DB::Invoice;
 use SL::DB::RecordTemplate;
 use SL::DB::Tax;
-use SL::Helper::Flash qw(flash);
+use SL::Helper::Flash qw(flash flash_later);
 use SL::Locale::String qw(t8);
 use SL::Presenter::Tag;
 use SL::Presenter::Chart;
@@ -124,16 +124,17 @@ sub load_record_template {
 
   # Fill $::form from the template.
   my $today                   = DateTime->today_local;
-  $::form->{title}            = "Add";
-  $::form->{currency}         = $template->currency->name;
-  $::form->{direct_debit}     = $template->direct_debit;
-  $::form->{globalproject_id} = $template->project_id;
-  $::form->{AR_chart_id}      = $template->ar_ap_chart_id;
-  $::form->{transdate}        = $today->to_kivitendo;
-  $::form->{duedate}          = $today->to_kivitendo;
-  $::form->{rowcount}         = @{ $template->items };
-  $::form->{paidaccounts}     = 1;
-  $::form->{$_}               = $template->$_ for qw(department_id ordnumber taxincluded employee_id notes);
+  $::form->{title}                   = "Add";
+  $::form->{currency}                = $template->currency->name;
+  $::form->{direct_debit}            = $template->direct_debit;
+  $::form->{globalproject_id}        = $template->project_id;
+  $::form->{transaction_description} = $template->transaction_description;
+  $::form->{AR_chart_id}             = $template->ar_ap_chart_id;
+  $::form->{transdate}               = $today->to_kivitendo;
+  $::form->{duedate}                 = $today->to_kivitendo;
+  $::form->{rowcount}                = @{ $template->items };
+  $::form->{paidaccounts}            = 1;
+  $::form->{$_}                      = $template->$_ for qw(department_id ordnumber taxincluded employee_id notes);
 
   if ($template->customer) {
     $::form->{customer_id} = $template->customer_id;
@@ -197,21 +198,22 @@ sub save_record_template {
   } (1..($::form->{rowcount} || 1));
 
   $template->assign_attributes(
-    template_type  => 'ar_transaction',
-    template_name  => $new_name,
+    template_type           => 'ar_transaction',
+    template_name           => $new_name,
 
-    currency_id    => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
-    ar_ap_chart_id => $::form->{AR_chart_id}      || undef,
-    customer_id    => $::form->{customer_id}      || undef,
-    department_id  => $::form->{department_id}    || undef,
-    project_id     => $::form->{globalproject_id} || undef,
-    employee_id    => $::form->{employee_id}      || undef,
-    taxincluded    => $::form->{taxincluded}  ? 1 : 0,
-    direct_debit   => $::form->{direct_debit} ? 1 : 0,
-    ordnumber      => $::form->{ordnumber},
-    notes          => $::form->{notes},
+    currency_id             => SL::DB::Manager::Currency->find_by(name => $::form->{currency})->id,
+    ar_ap_chart_id          => $::form->{AR_chart_id}      || undef,
+    customer_id             => $::form->{customer_id}      || undef,
+    department_id           => $::form->{department_id}    || undef,
+    project_id              => $::form->{globalproject_id} || undef,
+    employee_id             => $::form->{employee_id}      || undef,
+    taxincluded             => $::form->{taxincluded}  ? 1 : 0,
+    direct_debit            => $::form->{direct_debit} ? 1 : 0,
+    ordnumber               => $::form->{ordnumber},
+    notes                   => $::form->{notes},
+    transaction_description => $::form->{transaction_description},
 
-    items          => \@items,
+    items                   => \@items,
   );
 
   eval {
@@ -378,9 +380,6 @@ sub form_header {
   $form->{forex}        = $form->check_exchangerate( \%myconfig, $form->{currency}, $form->{transdate}, 'buy');
   $form->{exchangerate} = $form->{forex} if $form->{forex};
 
-  # format exchangerate
-  $form->{exchangerate}    = $form->{exchangerate} ? $form->format_amount(\%myconfig, $form->{exchangerate}) : '';
-
   $rows = max 2, $form->numtextrows($form->{notes}, 50);
 
   my @old_project_ids = grep { $_ } map { $form->{"project_id_$_"} } 1..$form->{rowcount};
@@ -390,8 +389,7 @@ sub form_header {
                                     "old_id"    => \@old_project_ids },
                    "charts"    => { "key"       => "ALL_CHARTS",
                                     "transdate" => $form->{transdate} },
-                   "taxcharts" => { "key"       => "ALL_TAXCHARTS",
-                                    "module"    => "AR" },);
+                  );
 
   $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
 
@@ -416,11 +414,14 @@ sub form_header {
   my $follow_up_trans_info =  "$form->{invnumber} ($follow_up_vc)";
 
   $::request->layout->add_javascripts("autocomplete_chart.js", "show_vc_details.js", "show_history.js", "follow_up.js", "kivi.Draft.js", "kivi.GL.js", "kivi.File.js", "kivi.RecordTemplate.js", "kivi.AR.js", "kivi.CustomerVendor.js", "kivi.Validator.js");
-
-  my $transdate = $::form->{transdate} ? DateTime->from_kivitendo($::form->{transdate}) : DateTime->today_local;
+  # get the correct date for tax
+  my $transdate    = $::form->{transdate}    ? DateTime->from_kivitendo($::form->{transdate})    : DateTime->today_local;
+  my $deliverydate = $::form->{deliverydate} ? DateTime->from_kivitendo($::form->{deliverydate}) : undef;
+  my $taxdate      = $deliverydate ? $deliverydate : $transdate;
+  # helpers for loop
   my $first_taxchart;
-
   my @transactions;
+
   for my $i (1 .. $form->{rowcount}) {
     my $transaction = {
       amount     => $form->{"amount_$i"},
@@ -431,14 +432,18 @@ sub form_header {
     my (%taxchart_labels, @taxchart_values, $default_taxchart, $taxchart_to_use);
     my $amount_chart_id = $form->{"AR_amount_chart_id_$i"} // $default_ar_amount_chart_id;
 
-    foreach my $item ( GL->get_active_taxes_for_chart($amount_chart_id, $transdate) ) {
+    my $used_tax_id;
+    if ( $form->{"taxchart_$i"} ) {
+      ($used_tax_id) = split(/--/, $form->{"taxchart_$i"});
+    }
+    foreach my $item ( GL->get_active_taxes_for_chart($amount_chart_id, $taxdate, $used_tax_id) ) {
       my $key             = $item->id . "--" . $item->rate;
       $first_taxchart   //= $item;
       $default_taxchart   = $item if $item->{is_default};
       $taxchart_to_use    = $item if $key eq $form->{"taxchart_$i"};
 
       push(@taxchart_values, $key);
-      $taxchart_labels{$key} = $item->taxdescription . " " . $item->rate * 100 . ' %';
+      $taxchart_labels{$key} = $item->taxkey . " - " . $item->taxdescription . " " . $item->rate * 100 . ' %';
     }
 
     $taxchart_to_use    //= $default_taxchart // $first_taxchart;
@@ -601,7 +606,7 @@ sub update {
   map { $form->{$_} = $form->parse_amount(\%myconfig, $form->{$_}) }
     qw(exchangerate creditlimit creditremaining);
 
-  my @flds  = qw(amount AR_amount projectnumber oldprojectnumber project_id);
+  my @flds  = qw(amount AR_amount_chart_id projectnumber oldprojectnumber project_id taxchart tax);
   my $count = 0;
   my @a     = ();
 
@@ -814,7 +819,18 @@ sub post {
   }
   # /saving the history
 
-  $form->redirect($locale->text('AR transaction posted.') . ' ' . $locale->text('ID') . ': ' . $form->{id}) unless $inline;
+  if (!$inline) {
+    my $msg = $locale->text("AR transaction '#1' posted (ID: #2)", $form->{invnumber}, $form->{id});
+    if ($::instance_conf->get_ar_add_doc && $::instance_conf->get_doc_storage) {
+      my $add_doc_url = build_std_url("script=ar.pl", 'action=edit', 'id=' . E($form->{id}));
+      SL::Helper::Flash::flash_later('info', $msg);
+      print $form->redirect_header($add_doc_url);
+      $::dispatcher->end_request;
+
+    } else {
+      $form->redirect($msg);
+    }
+  }
 
   $main::lxdebug->leave_sub();
 }
@@ -945,9 +961,10 @@ sub search {
 
   $form->{title} = $locale->text('Invoices, Credit Notes & AR Transactions');
 
-  $form->{ALL_EMPLOYEES} = SL::DB::Manager::Employee->get_all_sorted(query => [ deleted => 0 ]);
-  $form->{ALL_DEPARTMENTS} = SL::DB::Manager::Department->get_all_sorted;
-  $form->{ALL_BUSINESS_TYPES} = SL::DB::Manager::Business->get_all_sorted;
+  $form->{ALL_EMPLOYEES}      = SL::DB::Manager::Employee  ->get_all_sorted(query => [ deleted => 0 ]);
+  $form->{ALL_DEPARTMENTS}    = SL::DB::Manager::Department->get_all_sorted;
+  $form->{ALL_BUSINESS_TYPES} = SL::DB::Manager::Business  ->get_all_sorted;
+  $form->{ALL_TAXZONES}       = SL::DB::Manager::TaxZone   ->get_all_sorted;
 
   $form->{CT_CUSTOM_VARIABLES}                  = CVar->get_configs('module' => 'CT');
   ($form->{CT_CUSTOM_VARIABLES_FILTER_CODE},
@@ -998,6 +1015,7 @@ sub ar_transactions {
 
   my ($callback, $href, @columns);
 
+  my %params   = @_;
   report_generator_set_default_sort('transdate', 1);
 
   AR->ar_transactions(\%myconfig, \%$form);
@@ -1007,10 +1025,10 @@ sub ar_transactions {
   my $report = SL::ReportGenerator->new(\%myconfig, $form);
 
   @columns =
-    qw(ids transdate id type invnumber ordnumber cusordnumber name netamount tax amount paid
+    qw(ids transdate id type invnumber ordnumber cusordnumber donumber deliverydate name netamount tax amount paid
        datepaid due duedate transaction_description notes salesman employee shippingpoint shipvia
        marge_total marge_percent globalprojectnumber customernumber country ustid taxzone
-       payment_terms charts customertype direct_debit dunning_description department);
+       payment_terms charts customertype direct_debit dunning_description department attachments);
 
   my $ct_cvar_configs                 = CVar->get_configs('module' => 'CT');
   my @ct_includeable_custom_variables = grep { $_->{includeable} } @{ $ct_cvar_configs };
@@ -1021,10 +1039,11 @@ sub ar_transactions {
 
   my @hidden_variables = map { "l_${_}" } @columns;
   push @hidden_variables, "l_subtotal", qw(open closed customer invnumber ordnumber cusordnumber transaction_description notes project_id transdatefrom transdateto duedatefrom duedateto
-                                           employee_id salesman_id business_id parts_partnumber parts_description department_id show_marked_as_closed show_not_mailed);
+                                           employee_id salesman_id business_id parts_partnumber parts_description department_id show_marked_as_closed show_not_mailed
+                                           shippingpoint shipvia taxzone_id);
   push @hidden_variables, map { "cvar_$_->{name}" } @ct_searchable_custom_variables;
 
-  $href = build_std_url('action=ar_transactions', grep { $form->{$_} } @hidden_variables);
+  $href =  $params{want_binary_pdf} ? '' : build_std_url('action=ar_transactions', grep { $form->{$_} } @hidden_variables);
 
   my %column_defs = (
     'ids'                     => { raw_header_data => SL::Presenter::Tag::checkbox_tag("", id => "check_all", checkall => "[data-checkall=1]"), align => 'center' },
@@ -1034,6 +1053,8 @@ sub ar_transactions {
     'invnumber'               => { 'text' => $locale->text('Invoice'), },
     'ordnumber'               => { 'text' => $locale->text('Order'), },
     'cusordnumber'            => { 'text' => $locale->text('Customer Order Number'), },
+    'donumber'                => { 'text' => $locale->text('Delivery Order'), },
+    'deliverydate'            => { 'text' => $locale->text('Delivery Date'), },
     'name'                    => { 'text' => $locale->text('Customer'), },
     'netamount'               => { 'text' => $locale->text('Amount'), },
     'tax'                     => { 'text' => $locale->text('Tax'), },
@@ -1061,10 +1082,11 @@ sub ar_transactions {
     'direct_debit'            => { 'text' => $locale->text('direct debit'), },
     'department'              => { 'text' => $locale->text('Department'), },
     dunning_description       => { 'text' => $locale->text('Dunning level'), },
+    attachments               => { 'text' => $locale->text('Attachments'), },
     %column_defs_cvars,
   );
 
-  foreach my $name (qw(id transdate duedate invnumber ordnumber cusordnumber name datepaid employee shippingpoint shipvia transaction_description direct_debit department)) {
+  foreach my $name (qw(id transdate duedate invnumber ordnumber cusordnumber donumber deliverydate name datepaid employee shippingpoint shipvia transaction_description direct_debit department taxzone)) {
     my $sortdir                 = $form->{sort} eq $name ? 1 - $form->{sortdir} : $form->{sortdir};
     $column_defs{$name}->{link} = $href . "&sort=$name&sortdir=$sortdir";
   }
@@ -1142,6 +1164,13 @@ sub ar_transactions {
   if ($form->{closed}) {
     push @options, $locale->text('Closed');
   }
+  if ($form->{shipvia}) {
+    push @options, $locale->text('Ship via') . " : $form->{shipvia}";
+  }
+  if ($form->{shippingpoint}) {
+    push @options, $locale->text('Shipping Point') . " : $form->{shippingpoint}";
+  }
+
 
   $form->{ALL_PRINTERS} = SL::DB::Manager::Printer->get_all_sorted;
 
@@ -1178,15 +1207,30 @@ sub ar_transactions {
     $subtotals{marge_percent} = $subtotals{netamount} ? ($subtotals{marge_total} * 100 / $subtotals{netamount}) : 0;
     $totals{marge_percent}    = $totals{netamount}    ? ($totals{marge_total}    * 100 / $totals{netamount}   ) : 0;
 
+    # Preserve $ar->{type} before changing it to the abbreviation letter for
+    # getting files from file management below.
+    $ar->{object_type} = $ar->{type};
+
     my $is_storno  = $ar->{storno} &&  $ar->{storno_id};
     my $has_storno = $ar->{storno} && !$ar->{storno_id};
 
-    $ar->{type} =
-      $has_storno       ? $locale->text("Invoice with Storno (abbreviation)") :
-      $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
-      $ar->{amount} < 0 ? $locale->text("Credit note (one letter abbreviation)") :
-      $ar->{invoice}    ? $locale->text("Invoice (one letter abbreviation)") :
-                          $locale->text("AR Transaction (abbreviation)");
+    if ($ar->{type} eq 'invoice_for_advance_payment') {
+      $ar->{type} =
+        $has_storno       ? $locale->text("Invoice for Advance Payment with Storno (abbreviation)") :
+        $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
+                            $locale->text("Invoice for Advance Payment (one letter abbreviation)");
+
+    } elsif ($ar->{type} eq 'final_invoice') {
+      $ar->{type} = t8('Final Invoice (one letter abbreviation)');
+
+    } else {
+      $ar->{type} =
+        $has_storno       ? $locale->text("Invoice with Storno (abbreviation)") :
+        $is_storno        ? $locale->text("Storno (one letter abbreviation)") :
+        $ar->{amount} < 0 ? $locale->text("Credit note (one letter abbreviation)") :
+        $ar->{invoice}    ? $locale->text("Invoice (one letter abbreviation)") :
+                            $locale->text("AR Transaction (abbreviation)");
+    }
 
     map { $ar->{$_} = $form->format_amount(\%myconfig, $ar->{$_}, 2) } qw(netamount tax amount paid due marge_total marge_percent);
 
@@ -1202,13 +1246,27 @@ sub ar_transactions {
     }
 
     $row->{invnumber}->{link} = build_std_url("script=" . ($ar->{invoice} ? 'is.pl' : 'ar.pl'), 'action=edit')
-      . "&id=" . E($ar->{id}) . "&callback=${callback}";
+      . "&id=" . E($ar->{id}) . "&callback=${callback}" unless $params{want_binary_pdf};
 
     $row->{ids} = {
       raw_data =>  SL::Presenter::Tag::checkbox_tag("id[]", value => $ar->{id}, "data-checkall" => 1),
       valign   => 'center',
       align    => 'center',
     };
+
+    if ($::instance_conf->get_doc_storage && $form->{l_attachments}) {
+      my @files  = SL::File->get_all_versions(object_id   => $ar->{id},
+                                              object_type => $ar->{object_type} || 'invoice',
+                                              file_type   => 'attachment',);
+      if (scalar @files) {
+        my $html            = join '<br>', map { SL::Presenter::FileObject::file_object($_) } @files;
+        my $text            = join "\n",   map { $_->file_name                              } @files;
+        $row->{attachments} = { 'raw_data' => $html, data => $text };
+      } else {
+        $row->{attachments} = { };
+      }
+
+    }
 
     my $row_set = [ $row ];
 
@@ -1225,6 +1283,11 @@ sub ar_transactions {
 
   $report->add_separator();
   $report->add_data(create_subtotal_row(\%totals, \@columns, \%column_alignment, \@subtotal_columns, 'listtotal'));
+
+  if ($params{want_binary_pdf}) {
+    $report->generate_with_headers();
+    return $report->generate_pdf_content(want_binary_pdf => 1);
+  }
 
   $::request->layout->add_javascripts('kivi.MassInvoiceCreatePrint.js');
   setup_ar_transactions_action_bar(num_rows => scalar(@{ $form->{AR} }));

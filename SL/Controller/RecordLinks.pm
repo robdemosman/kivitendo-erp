@@ -43,15 +43,19 @@ my @link_type_specifics = (
   { title => t8('Sales quotation'),         type => 'sales_quotation',         model => 'Order',           number => 'quonumber', },
   { title => t8('Sales Order'),             type => 'sales_order',             model => 'Order',           number => 'ordnumber', },
   { title => t8('Sales delivery order'),    type => 'sales_delivery_order',    model => 'DeliveryOrder',   number => 'donumber',  },
+  { title => t8('RMA delivery order'),      type => 'rma_delivery_order',      model => 'DeliveryOrder',   number => 'rdonumber', },
   { title => t8('Sales Invoice'),           type => 'invoice',                 model => 'Invoice',         number => 'invnumber', },
   { title => t8('Request for Quotation'),   type => 'request_quotation',       model => 'Order',           number => 'quonumber', },
   { title => t8('Purchase Order'),          type => 'purchase_order',          model => 'Order',           number => 'ordnumber', },
   { title => t8('Purchase delivery order'), type => 'purchase_delivery_order', model => 'DeliveryOrder',   number => 'donumber',  },
+  { title => t8('Supplier delivery order'), type => 'supplier_delivery_order', model => 'DeliveryOrder',   number => 'sdonumber', },
   { title => t8('Purchase Invoice'),        type => 'purchase_invoice',        model => 'PurchaseInvoice', number => 'invnumber', },
   { title => t8('Letter'),                  type => 'letter',                  model => 'Letter',          number => 'letternumber', description => 'subject', description_title => t8('Subject'), date => 'date', project => undef },
   { title => t8('Email'),                   type => 'email_journal',           model => 'EmailJournal',    number => 'id', description => 'subject', description_title => t8('Subject'), },
   { title => t8('AR Transaction'),          type => 'ar_transaction',          model => 'Invoice',         number => 'invnumber', },
   { title => t8('AP Transaction'),          type => 'ap_transaction',          model => 'PurchaseInvoice', number => 'invnumber', },
+  { title => t8('Dunning'),                 type => 'dunning',                 model => 'Dunning',         number => 'dunning_id', },
+  { title => t8('GL Transaction'),          type => 'gl_transaction',          model => 'GLTransaction',   number => 'reference', },
 );
 
 my @link_types = map { +{ %link_type_defaults, %{ $_ } } } @link_type_specifics;
@@ -64,7 +68,10 @@ sub action_ajax_list {
   my ($self) = @_;
 
   eval {
-    my $linked_records = $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1);
+    my $linked_records = ($::instance_conf->get_always_record_links_from_order && ref $self->object ne 'SL::DB::Order')
+                       ?  $self->get_order_centric_linked_records
+                       :  $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1);
+
     push @{ $linked_records }, $self->object->sepa_export_items if $self->object->can('sepa_export_items');
 
     my $output         = grouped_record_list(
@@ -131,12 +138,23 @@ sub action_ajax_add_list {
   my $project_id  = "${project}_id";
   my $description = $self->link_type_desc->{description};
   my $filter      = $self->link_type_desc->{filter};
+  my $number      = $self->link_type_desc->{number};
 
   my @where = $filter && $manager->can($filter) ? $manager->$filter($self->link_type) : ();
   push @where, ("${vc}.${vc}number"     => { ilike => like($::form->{vc_number}) })               if $::form->{vc_number};
   push @where, ("${vc}.name"            => { ilike => like($::form->{vc_name}) })                 if $::form->{vc_name};
   push @where, ($description            => { ilike => like($::form->{transaction_description}) }) if $::form->{transaction_description};
   push @where, ($project_id             => $::form->{globalproject_id})                           if $::form->{globalproject_id} && $manager->can($project_id);
+
+  if ($::form->{number}) {
+    my $class    = 'SL::DB::' . $self->link_type_desc->{model};
+    my $col_type = ref $class->meta->column($number);
+    if ($col_type =~ /^Rose::DB::Object::Metadata::Column::(?:Integer|Serial)$/) {
+      push @where, ($number => $::form->{number});
+    } elsif ($col_type =~ /^Rose::DB::Object::Metadata::Column::Text$/) {
+      push @where, ($number => { ilike => like($::form->{number}) });
+    }
+  }
 
   my @with_objects = ($vc);
   push @with_objects, $project if $manager->can($project_id);
@@ -230,4 +248,24 @@ sub check_auth {
   $::auth->assert('record_links');
 }
 
+# internal
+
+sub get_order_centric_linked_records {
+  my ($self) = @_;
+
+  my $all_linked_records = $self->object->linked_records(direction => 'from', recursive => 1);
+  my $filtered_orders = [ grep { 'SL::DB::Order' eq ref $_ && $_->is_type('sales_order') } @$all_linked_records ];
+
+  # no orders no call to linked_records via batch mode
+  # but instead return default list
+  return $self->object->linked_records(direction => 'both', recursive => 1, save_path => 1)
+    unless scalar @$filtered_orders;
+
+  # we have a order, therefore get the tree view from the top (order)
+  my $id_ref = [ map { $_->id } @$filtered_orders ];
+  my $linked_records = SL::DB::Order->new->linked_records(direction => 'to', recursive => 1, batch => $id_ref);
+  push @{ $linked_records }, @$filtered_orders;
+
+  return $linked_records;
+}
 1;
